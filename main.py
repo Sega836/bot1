@@ -39,6 +39,23 @@ COOLDOWN_SECONDS = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# --- ФУНКЦИЯ ЧИСТКИ ИМЕН (Универсальная) ---
+def fix_bug_name(name):
+    """Пытается починить кракозябры в названии файла."""
+    try:
+        # Если в строке есть символы, которых быть не должно (кракозябры)
+        # Пробуем перекодировать cp437 -> cp1251
+        fixed = name.encode('cp437').decode('cp1251')
+        # Если получилось, возвращаем
+        return fixed
+    except:
+        try:
+            # Пробуем альтернативную кодировку (часто встречается)
+            fixed = name.encode('cp437').decode('cp866')
+            return fixed
+        except:
+            return name # Если не вышло, оставляем как есть
+
 # --- Работа с Яндекс.Диском и картинками ---
 def download_and_extract_bugs():
     print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
@@ -48,7 +65,6 @@ def download_and_extract_bugs():
     params = {"path": BUGS_ARCHIVE_PATH}
     
     try:
-        # 1. Получаем ссылку на скачивание
         resp = requests.get(meta_url, headers=headers, params=params)
         if resp.status_code != 200: return False
         meta = resp.json()
@@ -58,43 +74,29 @@ def download_and_extract_bugs():
             download_href = dl_resp.json().get("href")
 
         if not download_href: return False
-        
-        # 2. Качаем архив
         file_resp = requests.get(download_href)
         
-        # 3. Очищаем старую папку
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
 
-        # 4. Распаковываем с принудительной проверкой кодировки
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    # АВТОИСПРАВЛЕНИЕ КОДИРОВКИ
-                    filename = info.filename
-                    try:
-                        # Пробуем декодировать. Если получается - значит там кракозябры (cp437 -> utf-8)
-                        # Или cp437 -> cp1251 (зависит от того, как создавался архив)
-                        fixed_name = filename.encode('cp437').decode('utf-8')
-                    except:
-                        try:
-                            fixed_name = filename.encode('cp437').decode('cp1251')
-                        except:
-                            fixed_name = filename # Если не вышло, оставляем как есть
+                    # Чиним имя
+                    raw_name = os.path.splitext(info.filename)[0]
+                    fixed_name = fix_bug_name(raw_name)
                     
-                    # Если имя всё равно выглядит странно (много символов), берем оригинал
-                    if any(ord(c) > 0x4E00 for c in fixed_name):
-                         fixed_name = filename
-
-                    # Сохраняем файл с правильным именем
+                    # Добавляем расширение обратно
+                    ext = os.path.splitext(info.filename)[1]
+                    final_filename = f"{fixed_name}{ext}"
+                    
                     source = z.open(info.filename)
-                    target_path = os.path.join(LOCAL_IMAGE_DIR, fixed_name)
+                    target_path = os.path.join(LOCAL_IMAGE_DIR, final_filename)
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     with open(target_path, "wb") as target:
                         target.write(source.read())
         
-        # 5. Сохраняем список имен
         bugs = []
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
             for file in files:
@@ -369,7 +371,8 @@ async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /an (ответом) — Рассылка\n"
         "• /do — Скачать базы данных\n"
         "• /deluser (ответом) — Удалить юзера из группы\n"
-        "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ"
+        "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ\n"
+        "• /fixbugs — Перекачать жуков"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -563,6 +566,7 @@ def main():
     app.add_handler(CommandHandler("do", do_command))
     app.add_handler(CommandHandler("deluser", deluser_command))
     app.add_handler(CommandHandler("del", del_command))
+    app.add_handler(CommandHandler("fixbugs", fixbugs_command))
     
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
     app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(confirm_delete|cancel_delete)$"))
@@ -570,5 +574,5 @@ def main():
     print("✅ Бот успешно запущен!\n")
     app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
