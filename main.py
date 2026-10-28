@@ -183,6 +183,7 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     image_path = get_bug_image_path(random_bug)
     caption = f"🎉 {user.mention_html()}, ты поймал <b>{random_bug}</b>!\n\nОн добавлен в твою коллекцию."
     
+    # 1) Убрали отправку реф. ссылки после жука
     if image_path and os.path.exists(image_path):
         try:
             with open(image_path, 'rb') as photo:
@@ -192,27 +193,21 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
     else:
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
-    
-    ref_link = f"https://t.me/{context.bot.username}?start={user_id}"
-    keyboard = [[InlineKeyboardButton("📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text=Присоединяйся к охоте на жуков!")]]
-    await update.message.reply_text("Приглашай друзей и получай бонусных жуков!", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# --- НОВАЯ КОМАНДА РАССЫЛКИ (/re) ---
-async def re_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- 2) КОМАНДА /an (Бывшая /re) ---
+async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id != ADMIN_ID: return
         
-    # Проверяем, что команда отправлена ОТВЕТОМ (reply) на сообщение
     if not update.message.reply_to_message:
         await update.message.reply_text(
             "⚠️ <b>Как использовать:</b>\n"
-            "Ответьте (Reply) на любое сообщение (текст, фото, видео) и напишите команду <code>/re</code>.\n\n"
+            "Ответьте (Reply) на любое сообщение (текст, фото, видео) и напишите команду <code>/an</code>.\n\n"
             "Бот разошлет это сообщение во все группы и сбросит кулдаун у всех игроков.",
             parse_mode=ParseMode.HTML
         )
         return
 
-    # Получаем сообщение, на которое ответил админ
     replied_msg = update.message.reply_to_message
     
     users_df = load_users()
@@ -221,8 +216,6 @@ async def re_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     unique_chats = users_df['chat_id'].dropna().unique()
-    
-    # Сбрасываем кулдаун у всех
     reset_all_cooldowns()
     
     status_msg = await update.message.reply_text(f"🚀 Начинаю рассылку в {len(unique_chats)} чатов...\nКулдаун сброшен.")
@@ -230,20 +223,16 @@ async def re_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success_count = 0
     error_count = 0
     
+    # 3) Измененный текст сообщения
+    ad_postfix = "🎉 <b>Только благодаря этой рекламе кулдаун на ловлю жуков был сброшен!</b> Скорее пишите /bugs!"
+    
     for chat_id in unique_chats:
         try:
-            # Пересылаем само сообщение (копируем его в чат)
             await replied_msg.copy(chat_id=int(chat_id))
-            
-            # Дополнительно можно отправить сообщение о сбросе кулдауна (по желанию, можно закомментировать)
-            await context.bot.send_message(
-                chat_id=int(chat_id), 
-                text="🎉 <i>Кулдаун на ловлю жуков сброшен! Скорее пишите /bugs!</i>",
-                parse_mode=ParseMode.HTML
-            )
+            await context.bot.send_message(chat_id=int(chat_id), text=ad_postfix, parse_mode=ParseMode.HTML)
             
             success_count += 1
-            await asyncio.sleep(0.1) # Задержка от спама
+            await asyncio.sleep(0.1) 
         except Exception as e:
             error_count += 1
             logger.error(f"Ошибка рассылки в чат {chat_id}: {e}")
@@ -370,37 +359,36 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Отправь ссылку другу. Когда он добавит бота в <b>свою группу</b>, ты получишь <b>3 бонусных жука</b>, а кулдаун группы сбросится."
     )
     if user.id == ADMIN_ID:
-        text += "\n\n👑 <b>Для администратора:</b>\n• /ex — Аналитика\n• /re (ответом на сообщение) — Рассылка"
+        text += "\n\n👑 <b>Для администратора:</b>\n• /ex — Аналитика\n• /an (ответом на сообщение) — Рассылка\n• /do — Скачать базы данных"
         keyboard = [[InlineKeyboardButton("📊 Открыть аналитику", callback_data="admin_ex")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- СТАРАЯ КОМАНДА /ad (текстовая) ---
-async def ad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    ad_text = " ".join(context.args)
-    if not ad_text:
-        await update.message.reply_text("⚠️ Использование: <code>/ad Текст вашей рекламы</code>\nИли используйте <code>/re</code> (ответом на сообщение).", parse_mode=ParseMode.HTML)
-        return
+# --- 4) КОМАНДА /do (Скачивание баз) ---
+async def do_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id != ADMIN_ID: return
 
-    users_df = load_users()
-    if users_df.empty: return
-    unique_chats = users_df['chat_id'].dropna().unique()
-    reset_all_cooldowns()
-    
-    await update.message.reply_text(f"🚀 Рассылка в {len(unique_chats)} чатов...")
-    success = 0
-    ad_message = f"📢 <b>Объявление:</b>\n\n{ad_text}\n\n🎉 <i>Кулдаун сброшен! Скорее пишите /bugs!</i>"
-    
-    for chat_id in unique_chats:
-        try:
-            await context.bot.send_message(chat_id=int(chat_id), text=ad_message, parse_mode=ParseMode.HTML)
-            success += 1
-            await asyncio.sleep(0.1) 
-        except: pass
-            
-    await update.message.reply_text(f"✅ <b>Готово!</b> Успешно: {success}")
+    await update.message.reply_text("📦 Собираю базы данных...")
+
+    files_to_send = [
+        (USERS_FILE, "Users.csv"),
+        (SULKI_FILE, "Sulki.csv"),
+        (EX_FILE, "ex.csv"),
+        (BUGS_LIST_FILE, "bugs_list.json")
+    ]
+
+    for file_path, file_name in files_to_send:
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'rb') as f:
+                    await update.message.reply_document(document=f, filename=file_name)
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка при отправке {file_name}: {e}")
+        else:
+            await update.message.reply_text(f"⚠️ Файл {file_name} еще не создан.")
 
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -454,8 +442,8 @@ def main():
     app.add_handler(CommandHandler("top", top_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("ex", ex_command))
-    app.add_handler(CommandHandler("ad", ad_command))
-    app.add_handler(CommandHandler("re", re_command)) # Новая команда
+    app.add_handler(CommandHandler("an", an_command)) # Заменено на /an
+    app.add_handler(CommandHandler("do", do_command)) # Новая команда /do
     
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
     app.add_handler(CallbackQueryHandler(button_callback))
