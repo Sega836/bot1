@@ -8,6 +8,7 @@ import requests
 import pandas as pd
 import asyncio
 import urllib.parse
+import re
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
@@ -26,7 +27,6 @@ except PermissionError:
     os.makedirs(DATA_DIR, exist_ok=True)
 
 BUGS_ARCHIVE_PATH = "Bugs.zip" 
-NOMERA_PATH = "nomera.txt"
 LOCAL_IMAGE_DIR = os.path.join(DATA_DIR, "bug_images")
 
 USERS_FILE = os.path.join(DATA_DIR, "Users.csv")
@@ -34,125 +34,99 @@ SULKI_FILE = os.path.join(DATA_DIR, "Sulki.csv")
 EX_FILE = os.path.join(DATA_DIR, "ex.csv")
 BUGS_LIST_FILE = os.path.join(DATA_DIR, "bugs_list.json")
 ANALYTICS_FILE = os.path.join(DATA_DIR, "analytics.csv")
+MAPPING_FILE = os.path.join(DATA_DIR, "mapping.json")
 
 COOLDOWN_SECONDS = 5
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Скачивание файлов с Яндекс.Диска ---
-def download_yandex_file(path, is_binary=True):
+# --- Работа с Яндекс.Диском и картинками ---
+def download_and_extract_bugs():
+    print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
+    os.makedirs(LOCAL_IMAGE_DIR, exist_ok=True)
+    
     meta_url = "https://cloud-api.yandex.net/v1/disk/resources"
     headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
-    params = {"path": path}
+    params = {"path": BUGS_ARCHIVE_PATH}
     
     try:
+        # 1. Получаем ссылку на скачивание ZIP
         resp = requests.get(meta_url, headers=headers, params=params)
-        if resp.status_code == 404:
-            print(f"⚠️ [ЛОГ] Файл {path} не найден на Диске.")
-            return None
-        resp.raise_for_status()
+        if resp.status_code != 200: 
+            print(f"❌ [ЛОГ] Не удалось найти {BUGS_ARCHIVE_PATH} на Диске.")
+            return False
+            
         meta = resp.json()
         download_href = meta.get("file")
         if not download_href:
             dl_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/download", headers=headers, params=params)
             download_href = dl_resp.json().get("href")
 
+        if not download_href: return False
+        
+        # 2. Качаем архив
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
-        return file_resp.content if is_binary else file_resp.text
-    except Exception as e:
-        print(f"❌ [ЛОГ] Ошибка при скачивании {path}: {e}")
-        return None
-
-def load_nomera():
-    """Скачивает и парсит nomera.txt (или ищет его внутри архива)."""
-    mapping = {}
-    
-    # 1. Пробуем скачать с Яндекс.Диска как отдельный файл
-    content = download_yandex_file(NOMERA_PATH, is_binary=False)
-    
-    # 2. Если не вышло, пробуем найти внутри архива
-    if not content:
-        print("🔍 [ЛОГ] Ищу nomera.txt внутри Bugs.zip...")
-        zip_bytes = download_yandex_file(BUGS_ARCHIVE_PATH)
-        if zip_bytes:
-            try:
-                with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-                    if NOMERA_PATH in z.namelist():
-                        content = z.read(NOMERA_PATH).decode('utf-8')
-                    elif NOMERA_PATH.replace('.txt', '.csv') in z.namelist():
-                        content = z.read(NOMERA_PATH.replace('.txt', '.csv')).decode('utf-8')
-            except Exception as e:
-                print(f"Ошибка чтения архива: {e}")
-
-    if not content:
-        print("❌ [ЛОГ] Файл nomera.txt не найден ни на Диске, ни в архиве.")
-        return {}
-
-    # Парсим файл (формат: [1, Название] или [1, Название, 2, Название])
-    # Используем регулярку для поиска пар "число" и "текст"
-    import re
-    # Ищем паттерн: цифра, запятая/пробел, текст до следующей цифры или конца
-    matches = re.findall(r'(\d+)\s*[,:]\s*([^,\n]+)', content)
-    for num, name in matches:
-        mapping[num.strip()] = name.strip()
         
-    return mapping
+        # 3. Очищаем старую папку
+        for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
+            for name in files: os.remove(os.path.join(root, name))
+            for name in dirs: os.rmdir(os.path.join(root, name))
 
-# --- Распаковка ---
-def download_and_extract_bugs():
-    print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
-    os.makedirs(LOCAL_IMAGE_DIR, exist_ok=True)
-    
-    zip_content = download_yandex_file(BUGS_ARCHIVE_PATH)
-    if not zip_content:
-        return False
-        
-    # Очищаем старую папку
-    for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
-        for name in files: os.remove(os.path.join(root, name))
-        for name in dirs: os.rmdir(os.path.join(root, name))
+        mapping = {}
+        bugs_list = []
 
-    # Загружаем маппинг
-    mapping = load_nomera()
-    if not mapping:
-        print("⚠️ [ЛОГ] Маппинг пуст! Будут использоваться имена файлов.")
+        # 4. Открываем архив и ищем nomera.txt
+        with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+            nomera_filename = None
+            for name in z.namelist():
+                if name.lower().endswith("nomera.txt"):
+                    nomera_filename = name
+                    break
+            
+            if nomera_filename:
+                print(f"📄 [ЛОГ] Найден файл с названиями: {nomera_filename}")
+                raw_bytes = z.read(nomera_filename)
+                
+                # Пытаемся прочитать с разными кодировками
+                content = ""
+                for encoding in ['utf-8', 'cp1251', 'cp866']:
+                    try:
+                        content = raw_bytes.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                
+                # Умный парсинг: ищем строки, где есть число, а затем текст
+                lines = content.splitlines() # splitlines лучше, чем split('\n')
+                for line in lines:
+                    line = line.strip()
+                    if not line: continue
+                    
+                    # Ищем формат "1, Название", "1 Название", "1: Название", "1 - Название"
+                    # \s* - любые пробелы, [,\-:]? - необязательный разделитель
+                    match = re.match(r'^(\d+)\s*[,\-:]?\s*(.*)$', line)
+                    if match:
+                        num = match.group(1).strip()
+                        name = match.group(2).strip()
+                        if name:
+                            mapping[num] = name
+                            bugs_list.append(name)
+            else:
+                print("⚠️ [ЛОГ] nomera.txt не найден внутри архива. Будут использоваться имена файлов.")
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_content)) as z:
+            # 5. Распаковываем картинки
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    # Берем ID (имя файла без расширения)
-                    file_id = os.path.splitext(info.filename)[0]
-                    
-                    # Ищем нормальное имя в маппинге
-                    display_name = mapping.get(file_id, file_id)
-                    
-                    # Сохраняем файл
+                    # Сохраняем под оригинальным именем (1.jpg), чтобы не ломать связку
                     source = z.open(info.filename)
                     target_path = os.path.join(LOCAL_IMAGE_DIR, info.filename)
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     with open(target_path, "wb") as target:
                         target.write(source.read())
-                    
-                    # Запоминаем связку Имя -> Имя файла
-                    # Сохраняем в базу отдельно
-                    with open(os.path.join(DATA_DIR, "mapping.json"), "a", encoding="utf-8") as map_file:
-                         pass # Пока просто пишем файлы
-        
-        # Восстанавливаем правильный список имен
-        # Проходимся по папке и смотрим, какие файлы есть
-        bugs = []
-        for file in os.listdir(LOCAL_IMAGE_DIR):
-            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                file_id = os.path.splitext(file)[0]
-                display_name = mapping.get(file_id, file_id)
-                bugs.append(display_name)
-        
-        bugs = list(set(bugs))
-        
-        # Сохраняем маппинг в глобальный файл, чтобы бот знал, какая картинка какому имени соответствует
+
+        # 6. Сохраняем маппинг (Название -> Файл)
         final_mapping = {}
         for file in os.listdir(LOCAL_IMAGE_DIR):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
@@ -160,15 +134,22 @@ def download_and_extract_bugs():
                 display_name = mapping.get(file_id, file_id)
                 final_mapping[display_name] = file
         
-        with open(os.path.join(DATA_DIR, "mapping.json"), "w", encoding="utf-8") as f:
+        # Если список пуст (nomera.txt не было), заполняем именами файлов
+        if not bugs_list:
+            bugs_list = list(final_mapping.keys())
+        
+        bugs_list = list(set(bugs_list))
+
+        with open(MAPPING_FILE, "w", encoding="utf-8") as f:
             json.dump(final_mapping, f, ensure_ascii=False)
             
         with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f:
-            json.dump(bugs, f, ensure_ascii=False)
+            json.dump(bugs_list, f, ensure_ascii=False)
             
-        print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs)}")
-        print(f"🐞 Примеры названий: {bugs[:10]}")
+        print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs_list)}")
+        print(f"🐞 Примеры названий: {bugs_list[:5]}")
         return True
+        
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка: {e}")
         return False
@@ -179,10 +160,8 @@ def get_bug_list():
     return []
 
 def get_bug_image_path(bug_name):
-    # Читаем маппинг
-    map_file = os.path.join(DATA_DIR, "mapping.json")
-    if os.path.exists(map_file):
-        with open(map_file, "r", encoding="utf-8") as f:
+    if os.path.exists(MAPPING_FILE):
+        with open(MAPPING_FILE, "r", encoding="utf-8") as f:
             mapping = json.load(f)
             filename = mapping.get(bug_name)
             if filename:
@@ -303,7 +282,7 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
     bug_list = get_bug_list()
     if not bug_list:
-        await update.message.reply_text("База жуков пуста.")
+        await update.message.reply_text("База жуков пуста. Обратитесь к администратору.")
         return
     random_bug = random.choice(bug_list)
     add_bug_to_user(user_id, user.username or user.first_name, chat_id, random_bug)
@@ -512,7 +491,7 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- КОМАНДА /fixbugs ---
 async def fixbugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    msg = await update.message.reply_text("🔄 Перекачиваю архив и файл nomera.txt...")
+    msg = await update.message.reply_text("🔄 Перекачиваю архив и ищу nomera.txt...")
     success = download_and_extract_bugs()
     if success:
         bugs = get_bug_list()
