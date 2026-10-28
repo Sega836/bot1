@@ -12,7 +12,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 
 # --- Конфигурация ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-YANDEX_TOKEN = os.environ.get("YANDEX_TOKEN")  # Токен для Яндекс.Диска
+YANDEX_TOKEN = os.environ.get("y0__wgBELWr7MIHGNuWAyCsvq7BGTDq4puDCH-DErd6M12ptPH6G-hTU0f8qayp")  # Токен для Яндекс.Диска
 ADMIN_ID = 6597229121
 BUGS_ARCHIVE_PATH = "Bugs.zip"  # Путь к архиву на Яндекс.Диске
 LOCAL_IMAGE_DIR = "bug_images"
