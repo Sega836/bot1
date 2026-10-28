@@ -26,6 +26,7 @@ except PermissionError:
     os.makedirs(DATA_DIR, exist_ok=True)
 
 BUGS_ARCHIVE_PATH = "Bugs.zip" 
+NOMERA_PATH = "nomera.txt"
 LOCAL_IMAGE_DIR = os.path.join(DATA_DIR, "bug_images")
 
 USERS_FILE = os.path.join(DATA_DIR, "Users.csv")
@@ -39,73 +40,132 @@ COOLDOWN_SECONDS = 5
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- ФУНКЦИЯ ЧИСТКИ ИМЕН (Универсальная) ---
-def fix_bug_name(name):
-    """Пытается починить кракозябры в названии файла."""
-    try:
-        # Если в строке есть символы, которых быть не должно (кракозябры)
-        # Пробуем перекодировать cp437 -> cp1251
-        fixed = name.encode('cp437').decode('cp1251')
-        # Если получилось, возвращаем
-        return fixed
-    except:
-        try:
-            # Пробуем альтернативную кодировку (часто встречается)
-            fixed = name.encode('cp437').decode('cp866')
-            return fixed
-        except:
-            return name # Если не вышло, оставляем как есть
-
-# --- Работа с Яндекс.Диском и картинками ---
-def download_and_extract_bugs():
-    print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
-    os.makedirs(LOCAL_IMAGE_DIR, exist_ok=True)
+# --- Скачивание файлов с Яндекс.Диска ---
+def download_yandex_file(path, is_binary=True):
     meta_url = "https://cloud-api.yandex.net/v1/disk/resources"
     headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
-    params = {"path": BUGS_ARCHIVE_PATH}
+    params = {"path": path}
     
     try:
         resp = requests.get(meta_url, headers=headers, params=params)
-        if resp.status_code != 200: return False
+        if resp.status_code == 404:
+            print(f"⚠️ [ЛОГ] Файл {path} не найден на Диске.")
+            return None
+        resp.raise_for_status()
         meta = resp.json()
         download_href = meta.get("file")
         if not download_href:
             dl_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/download", headers=headers, params=params)
             download_href = dl_resp.json().get("href")
 
-        if not download_href: return False
         file_resp = requests.get(download_href)
-        
-        for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
-            for name in files: os.remove(os.path.join(root, name))
-            for name in dirs: os.rmdir(os.path.join(root, name))
+        file_resp.raise_for_status()
+        return file_resp.content if is_binary else file_resp.text
+    except Exception as e:
+        print(f"❌ [ЛОГ] Ошибка при скачивании {path}: {e}")
+        return None
 
-        with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+def load_nomera():
+    """Скачивает и парсит nomera.txt (или ищет его внутри архива)."""
+    mapping = {}
+    
+    # 1. Пробуем скачать с Яндекс.Диска как отдельный файл
+    content = download_yandex_file(NOMERA_PATH, is_binary=False)
+    
+    # 2. Если не вышло, пробуем найти внутри архива
+    if not content:
+        print("🔍 [ЛОГ] Ищу nomera.txt внутри Bugs.zip...")
+        zip_bytes = download_yandex_file(BUGS_ARCHIVE_PATH)
+        if zip_bytes:
+            try:
+                with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                    if NOMERA_PATH in z.namelist():
+                        content = z.read(NOMERA_PATH).decode('utf-8')
+                    elif NOMERA_PATH.replace('.txt', '.csv') in z.namelist():
+                        content = z.read(NOMERA_PATH.replace('.txt', '.csv')).decode('utf-8')
+            except Exception as e:
+                print(f"Ошибка чтения архива: {e}")
+
+    if not content:
+        print("❌ [ЛОГ] Файл nomera.txt не найден ни на Диске, ни в архиве.")
+        return {}
+
+    # Парсим файл (формат: [1, Название] или [1, Название, 2, Название])
+    # Используем регулярку для поиска пар "число" и "текст"
+    import re
+    # Ищем паттерн: цифра, запятая/пробел, текст до следующей цифры или конца
+    matches = re.findall(r'(\d+)\s*[,:]\s*([^,\n]+)', content)
+    for num, name in matches:
+        mapping[num.strip()] = name.strip()
+        
+    return mapping
+
+# --- Распаковка ---
+def download_and_extract_bugs():
+    print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
+    os.makedirs(LOCAL_IMAGE_DIR, exist_ok=True)
+    
+    zip_content = download_yandex_file(BUGS_ARCHIVE_PATH)
+    if not zip_content:
+        return False
+        
+    # Очищаем старую папку
+    for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
+        for name in files: os.remove(os.path.join(root, name))
+        for name in dirs: os.rmdir(os.path.join(root, name))
+
+    # Загружаем маппинг
+    mapping = load_nomera()
+    if not mapping:
+        print("⚠️ [ЛОГ] Маппинг пуст! Будут использоваться имена файлов.")
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_content)) as z:
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    # Чиним имя
-                    raw_name = os.path.splitext(info.filename)[0]
-                    fixed_name = fix_bug_name(raw_name)
+                    # Берем ID (имя файла без расширения)
+                    file_id = os.path.splitext(info.filename)[0]
                     
-                    # Добавляем расширение обратно
-                    ext = os.path.splitext(info.filename)[1]
-                    final_filename = f"{fixed_name}{ext}"
+                    # Ищем нормальное имя в маппинге
+                    display_name = mapping.get(file_id, file_id)
                     
+                    # Сохраняем файл
                     source = z.open(info.filename)
-                    target_path = os.path.join(LOCAL_IMAGE_DIR, final_filename)
+                    target_path = os.path.join(LOCAL_IMAGE_DIR, info.filename)
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     with open(target_path, "wb") as target:
                         target.write(source.read())
-        
-        bugs = []
-        for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
-            for file in files:
-                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    bugs.append(os.path.splitext(file)[0])
                     
+                    # Запоминаем связку Имя -> Имя файла
+                    # Сохраняем в базу отдельно
+                    with open(os.path.join(DATA_DIR, "mapping.json"), "a", encoding="utf-8") as map_file:
+                         pass # Пока просто пишем файлы
+        
+        # Восстанавливаем правильный список имен
+        # Проходимся по папке и смотрим, какие файлы есть
+        bugs = []
+        for file in os.listdir(LOCAL_IMAGE_DIR):
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                file_id = os.path.splitext(file)[0]
+                display_name = mapping.get(file_id, file_id)
+                bugs.append(display_name)
+        
         bugs = list(set(bugs))
+        
+        # Сохраняем маппинг в глобальный файл, чтобы бот знал, какая картинка какому имени соответствует
+        final_mapping = {}
+        for file in os.listdir(LOCAL_IMAGE_DIR):
+            if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                file_id = os.path.splitext(file)[0]
+                display_name = mapping.get(file_id, file_id)
+                final_mapping[display_name] = file
+        
+        with open(os.path.join(DATA_DIR, "mapping.json"), "w", encoding="utf-8") as f:
+            json.dump(final_mapping, f, ensure_ascii=False)
+            
         with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f:
             json.dump(bugs, f, ensure_ascii=False)
+            
         print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs)}")
         print(f"🐞 Примеры названий: {bugs[:10]}")
         return True
@@ -119,10 +179,16 @@ def get_bug_list():
     return []
 
 def get_bug_image_path(bug_name):
-    for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
-        for file in files:
-            if os.path.splitext(file)[0] == bug_name and file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                return os.path.join(root, file)
+    # Читаем маппинг
+    map_file = os.path.join(DATA_DIR, "mapping.json")
+    if os.path.exists(map_file):
+        with open(map_file, "r", encoding="utf-8") as f:
+            mapping = json.load(f)
+            filename = mapping.get(bug_name)
+            if filename:
+                path = os.path.join(LOCAL_IMAGE_DIR, filename)
+                if os.path.exists(path):
+                    return path
     return None
 
 # --- Работа с CSV ---
@@ -150,33 +216,21 @@ def log_event(user_id, chat_id, action, bug_name=""):
 def update_daily_analytics(action_type):
     today = datetime.now().strftime("%Y-%m-%d")
     df = pd.read_csv(ANALYTICS_FILE)
-    
     if today not in df['date'].values:
         new_row = {"date": today, "bugs_clicked": 0, "new_users": 0}
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-    
     idx = df[df['date'] == today].index[0]
-    if action_type == "bugs":
-        df.at[idx, 'bugs_clicked'] += 1
-    elif action_type == "new_user":
-        df.at[idx, 'new_users'] += 1
-        
+    if action_type == "bugs": df.at[idx, 'bugs_clicked'] += 1
+    elif action_type == "new_user": df.at[idx, 'new_users'] += 1
     df.to_csv(ANALYTICS_FILE, index=False)
 
 def add_bug_to_user(user_id, username, chat_id, bug_name):
     users = load_users()
     user_id, chat_id = int(user_id), int(chat_id)
-    
     user_row = users[(users['user_id'] == user_id) & (users['chat_id'] == chat_id)]
-    
     if user_row.empty:
         collection = {bug_name: 1}
-        new_row = {
-            "user_id": user_id, "username": username, "chat_id": chat_id, 
-            "collection_json": json.dumps(collection, ensure_ascii=False), 
-            "last_command_time": datetime.now().isoformat(),
-            "reg_date": datetime.now().strftime("%Y-%m-%d")
-        }
+        new_row = {"user_id": user_id, "username": username, "chat_id": chat_id, "collection_json": json.dumps(collection, ensure_ascii=False), "last_command_time": datetime.now().isoformat(), "reg_date": datetime.now().strftime("%Y-%m-%d")}
         users = pd.concat([users, pd.DataFrame([new_row])], ignore_index=True)
         update_daily_analytics("new_user")
     else:
@@ -185,7 +239,6 @@ def add_bug_to_user(user_id, username, chat_id, bug_name):
         current_collection[bug_name] = current_collection.get(bug_name, 0) + 1
         users.at[idx, 'collection_json'] = json.dumps(current_collection, ensure_ascii=False)
         users.at[idx, 'last_command_time'] = datetime.now().isoformat()
-        
     save_users(users)
 
 def reset_cooldown_in_chat(chat_id):
@@ -202,48 +255,30 @@ def reset_cooldown_in_chat(chat_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
-    
     if context.args and chat.type == 'private':
         referrer_id = context.args[0]
         try: referrer_id = int(referrer_id)
-        except ValueError: referrer_id = None
-        
+        except: referrer_id = None
         if referrer_id and referrer_id != user.id:
             users_df = load_users()
             ref_groups = users_df[users_df['user_id'] == referrer_id]
-            
             if not ref_groups.empty:
                 ref_groups = ref_groups.sort_values(by='last_command_time', ascending=False)
                 target_chat_id = int(ref_groups.iloc[0]['chat_id'])
-                
                 bug_list = get_bug_list()
                 if bug_list:
                     for _ in range(3):
                         add_bug_to_user(referrer_id, "referrer", target_chat_id, random.choice(bug_list))
-                
                 reset_cooldown_in_chat(target_chat_id)
                 log_event(referrer_id, target_chat_id, "ref_success", "3 bugs")
-                
                 ref_username = ref_groups.iloc[0]['username']
-                msg = (
-                    f"🎁 <b>Реферальная программа!</b>\n\n"
-                    f"Пользователь {user.mention_html()} перешел по реферальной ссылке.\n"
-                    f"Пригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b>!\n"
-                    f"⚡ У <b>всей группы</b> сброшен кулдаун!"
-                )
-                try:
-                    await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
+                msg = (f"🎁 <b>Реферальная программа!</b>\n\nПользователь {user.mention_html()} перешел по ссылке.\nПригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b>!\n⚡ У <b>всей группы</b> сброшен кулдаун!")
+                try: await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
                 except: pass
-
             await update.message.reply_text(f"👋 Привет, {user.first_name}!\n\nТы перешёл по приглашению!\nДобавь меня в свою группу и начинай ловить жуков: /bugs")
             return
-    
     if chat.type == 'private':
-        text = (
-            f"Привет! Я <b>Жук-Бот</b> — бот для чатов (групп)\n\n"
-            f"Смысл бота: бот работает только в чатах. Раз в {COOLDOWN_SECONDS} секунд (пока тестируем) игрок может прописать команду /bugs, где в ответ получит от бота случайного жука.\n\n"
-            f"Если у тебя есть вопросы — пиши команду: /help"
-        )
+        text = (f"Привет! Я <b>Жук-Бот</b> — бот для чатов (групп)\n\nСмысл бота: бот работает только в чатах. Раз в {COOLDOWN_SECONDS} секунд (пока тестируем) игрок может прописать команду /bugs, где в ответ получит от бота случайного жука.\n\nЕсли у тебя есть вопросы — пиши команду: /help")
         keyboard = [[InlineKeyboardButton("➕ Добавить в группу", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -252,16 +287,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
-    user_id = int(user.id)
-    chat_id = int(chat.id)
-    
+    user_id, chat_id = int(user.id), int(chat.id)
     if chat.type not in ['group', 'supergroup']:
         await update.message.reply_text("Эта команда работает только в группах!")
         return
-
     users = load_users()
     user_row = users[(users['user_id'] == user_id) & (users['chat_id'] == chat_id)]
-    
     if not user_row.empty:
         last_time_str = user_row.iloc[0]['last_command_time']
         if pd.notna(last_time_str):
@@ -270,20 +301,16 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 remaining = timedelta(seconds=COOLDOWN_SECONDS) - (datetime.now() - last_time)
                 await update.message.reply_text(f"⏳ Подожди еще {remaining.seconds} сек.!")
                 return
-
     bug_list = get_bug_list()
     if not bug_list:
-        await update.message.reply_text("База жуков пуста. Обратитесь к администратору.")
+        await update.message.reply_text("База жуков пуста.")
         return
-    
     random_bug = random.choice(bug_list)
     add_bug_to_user(user_id, user.username or user.first_name, chat_id, random_bug)
     log_event(user_id, chat_id, "bugs_command", random_bug)
     update_daily_analytics("bugs")
-    
     image_path = get_bug_image_path(random_bug)
     caption = f"🎉 {user.mention_html()}, ты поймал <b>{random_bug}</b>!\n\nОн добавлен в твою коллекцию."
-    
     if image_path and os.path.exists(image_path):
         try:
             with open(image_path, 'rb') as photo:
@@ -300,11 +327,7 @@ async def new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ref_link = f"https://t.me/{context.bot.username}?start={user.id}"
-    text = (
-        "🎁 <b>Твоя реферальная ссылка:</b>\n\n"
-        f"<code>{ref_link}</code>\n\n"
-        "Отправь её другу. Как только он перейдет по ней и запустит бота, ты <b>сразу получишь 3 бонусных жука</b>, а кулдаун твоей последней активной группы сбросится!"
-    )
+    text = (f"🎁 <b>Твоя реферальная ссылка:</b>\n\n<code>{ref_link}</code>\n\nОтправь её другу. Как только он перейдет по ней и запустит бота, ты <b>сразу получишь 3 бонусных жука</b>!")
     keyboard = [[InlineKeyboardButton("📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text=Присоединяйся к охоте на жуков!")]]
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -315,11 +338,9 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_users()
     user_id, chat_id = int(user.id), int(chat.id)
     user_row = users[(users['user_id'] == user_id) & (users['chat_id'] == chat_id)]
-    
     if user_row.empty:
         await update.message.reply_text("У тебя пока нет пойманных жуков. Напиши /bugs!")
         return
-        
     collection = json.loads(user_row.iloc[0]['collection_json'])
     total_bugs = sum(collection.values())
     text = f"👤 <b>Профиль {user.first_name}</b>\n\n🐞 Всего собрано: <b>{total_bugs}</b>\n📦 Уникальных видов: <b>{len(collection)}</b>\n\n<b>Твоя коллекция:</b>\n"
@@ -346,68 +367,29 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "🐞 <b>Охота на жуков — Справка</b>\n\n"
-        "📜 <b>Доступные команды:</b>\n"
-        "• /bugs — Поймать жука\n"
-        "• /ref — Реферальная ссылка\n"
-        "• /profile — Моя коллекция\n"
-        "• /top — Топ игроков\n"
-        "• /help — Помощь\n\n"
-        "🎁 <b>Реферальная программа:</b>\n"
-        "Отправь ссылку другу. Как только он перейдет по ней, ты сразу получишь <b>3 бонусных жука</b>!"
-    )
+    text = ("🐞 <b>Охота на жуков — Справка</b>\n\n📜 <b>Доступные команды:</b>\n• /bugs — Поймать жука\n• /ref — Реферальная ссылка\n• /profile — Моя коллекция\n• /top — Топ игроков\n• /help — Помощь\n\n🎁 <b>Реферальная программа:</b>\nОтправь ссылку другу. Как только он перейдет по ней, ты сразу получишь <b>3 бонусных жука</b>!")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    text = (
-        "👑 <b>Команды администратора</b>\n\n"
-        "📊 <b>Статистика и аналитика:</b>\n"
-        "• /stats — Текстовая статистика\n"
-        "• /ex — Графики за 7 дней\n"
-        "• /exall — Графики за всё время\n\n"
-        "🛠 <b>Управление:</b>\n"
-        "• /an (ответом) — Рассылка\n"
-        "• /do — Скачать базы данных\n"
-        "• /deluser (ответом) — Удалить юзера из группы\n"
-        "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ\n"
-        "• /fixbugs — Перекачать жуков"
-    )
+    text = ("👑 <b>Команды администратора</b>\n\n📊 <b>Статистика:</b>\n• /stats — Текстовая статистика\n• /ex — Графики за 7 дней\n• /exall — Графики за всё время\n\n🛠 <b>Управление:</b>\n• /an (ответом) — Рассылка\n• /do — Скачать базы данных\n• /deluser (ответом) — Удалить юзера из группы\n• /del — ОЧИСТИТЬ ВСЕ БАЗЫ\n• /fixbugs — Перекачать жуков")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     users_df = load_users()
     analytics_df = pd.read_csv(ANALYTICS_FILE)
-    
     total_users = len(users_df)
     total_bugs = analytics_df['bugs_clicked'].sum() if not analytics_df.empty else 0
     last_7_days = analytics_df.tail(7)
     bugs_7d = last_7_days['bugs_clicked'].sum() if not last_7_days.empty else 0
     users_7d = last_7_days['new_users'].sum() if not last_7_days.empty else 0
-    
-    text = (
-        f"📈 <b>Статистика бота</b>\n\n"
-        f"👥 Всего игроков в боте: <b>{total_users}</b>\n"
-        f"🐞 Всего нажатий /bugs: <b>{total_bugs}</b>\n\n"
-        f"<b>За последние 7 дней:</b>\n"
-        f"🐞 Нажатий /bugs: <b>{bugs_7d}</b>\n"
-        f"🆕 Пришло новых игроков: <b>{users_7d}</b>"
-    )
+    text = (f"📈 <b>Статистика бота</b>\n\n👥 Всего игроков в боте: <b>{total_users}</b>\n🐞 Всего нажатий /bugs: <b>{total_bugs}</b>\n\n<b>За последние 7 дней:</b>\n🐞 Нажатий /bugs: <b>{bugs_7d}</b>\n🆕 Пришло новых игроков: <b>{users_7d}</b>")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line", chart_type_users="bar"):
-    config_bugs = {
-        "type": chart_type_bugs,
-        "data": {"labels": labels, "datasets": [{"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f", "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]},
-        "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}
-    }
-    config_users = {
-        "type": chart_type_users,
-        "data": {"labels": labels, "datasets": [{"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]},
-        "options": {"title": {"display": True, "text": title_users, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}
-    }
+    config_bugs = {"type": chart_type_bugs, "data": {"labels": labels, "datasets": [{"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f", "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]}, "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
+    config_users = {"type": chart_type_users, "data": {"labels": labels, "datasets": [{"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]}, "options": {"title": {"display": True, "text": title_users, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
     url_bugs = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_bugs))}&w=600&h=300&bkg=white"
     url_users = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_users))}&w=600&h=300&bkg=white"
     return url_bugs, url_users
@@ -425,8 +407,7 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (7 дней)")
         await asyncio.sleep(1)
         await update.message.reply_photo(photo=url_users, caption="📊 График прироста игроков (7 дней)")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -448,8 +429,7 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (всё время)")
         await asyncio.sleep(1)
         await update.message.reply_photo(photo=url_users, caption="📊 График прироста игроков (всё время)")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -471,8 +451,7 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pd.DataFrame(columns=["timestamp", "user_id", "chat_id", "action", "bug_name"]).to_csv(EX_FILE, index=False)
             pd.DataFrame(columns=["date", "bugs_clicked", "new_users"]).to_csv(ANALYTICS_FILE, index=False)
             await query.edit_message_text("✅ <b>Все базы данных успешно очищены!</b>", parse_mode=ParseMode.HTML)
-        except Exception as e:
-            await query.edit_message_text(f"❌ Ошибка: {e}")
+        except Exception as e: await query.edit_message_text(f"❌ Ошибка: {e}")
 
 async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -494,7 +473,7 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await replied_msg.copy(chat_id=int(chat_id))
             await context.bot.send_message(chat_id=int(chat_id), text=ad_postfix, parse_mode=ParseMode.HTML)
             success += 1
-            await asyncio.sleep(0.1) 
+            await asyncio.sleep(0.1)
         except: error += 1
     await status_msg.edit_text(f"✅ <b>Готово!</b> Успешно: {success}, Ошибок: {error}", parse_mode=ParseMode.HTML)
 
@@ -530,18 +509,24 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_users(users)
     await update.message.reply_text(f"✅ <b>Пользователь удален.</b>", parse_mode=ParseMode.HTML)
 
+# --- КОМАНДА /fixbugs ---
+async def fixbugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    msg = await update.message.reply_text("🔄 Перекачиваю архив и файл nomera.txt...")
+    success = download_and_extract_bugs()
+    if success:
+        bugs = get_bug_list()
+        sample = ", ".join(bugs[:5]) if bugs else "пусто"
+        await msg.edit_text(f"✅ <b>Успешно!</b>\nНайдено жуков: {len(bugs)}\nПримеры: {sample}", parse_mode=ParseMode.HTML)
+    else:
+        await msg.edit_text("❌ Ошибка при скачивании. Проверьте логи.")
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
 async def post_init(application):
-    commands = [
-        BotCommand("bugs", "🐞 Поймать жука"),
-        BotCommand("ref", "🔗 Моя реф. ссылка"),
-        BotCommand("profile", "👤 Мой профиль"),
-        BotCommand("top", "🏆 Топ игроков"),
-        BotCommand("help", "📜 Помощь"),
-    ]
+    commands = [BotCommand("bugs", "🐞 Поймать жука"), BotCommand("ref", "🔗 Моя реф. ссылка"), BotCommand("profile", "👤 Мой профиль"), BotCommand("top", "🏆 Топ игроков"), BotCommand("help", "📜 Помощь")]
     await application.bot.set_my_commands(commands)
 
 def main():
@@ -574,5 +559,5 @@ def main():
     print("✅ Бот успешно запущен!\n")
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
