@@ -8,8 +8,8 @@ import requests
 import pandas as pd
 import asyncio
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters, CallbackQueryHandler
 from telegram.constants import ParseMode
 
 # --- Конфигурация ---
@@ -32,13 +32,14 @@ SULKI_FILE = os.path.join(DATA_DIR, "Sulki.csv")
 EX_FILE = os.path.join(DATA_DIR, "ex.csv")
 BUGS_LIST_FILE = os.path.join(DATA_DIR, "bugs_list.json")
 
-COOLDOWN_HOURS = 2
+# КУЛДАУН ТЕПЕРЬ 5 СЕКУНД (для тестов)
+COOLDOWN_SECONDS = 5
 
 # Настройка логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Работа с Яндекс.Диском и картинками (без изменений) ---
+# --- Работа с Яндекс.Диском и картинками ---
 def download_and_extract_bugs():
     print("\n" + "="*40)
     print("🚀 [ЛОГ] ЗАПУСК ЗАГРУЗКИ ЖУКОВ С ЯНДЕКС.ДИСКА")
@@ -120,7 +121,7 @@ def get_bug_image_path(bug_name):
                 return os.path.join(root, file)
     return None
 
-# --- Работа с CSV (без изменений) ---
+# --- Работа с CSV ---
 def init_csv_files():
     if not os.path.exists(USERS_FILE):
         pd.DataFrame(columns=["user_id", "username", "chat_id", "collection_json", "last_command_time"]).to_csv(USERS_FILE, index=False)
@@ -156,14 +157,11 @@ def add_bug_to_user(user_id, username, chat_id, bug_name):
         users.at[idx, 'last_command_time'] = datetime.now().isoformat()
     save_users(users)
 
-# --- НОВАЯ ФУНКЦИЯ: Сброс кулдауна у ВСЕХ ---
 def reset_all_cooldowns():
-    """Сбрасывает кулдаун абсолютно у всех игроков во всех группах."""
     users = load_users()
-    if users.empty:
-        return 0
-    # Ставим время так, чтобы кулдаун точно прошел
-    past_time = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
+    if users.empty: return 0
+    # Так как кулдаун теперь в секундах, вычитаем 10 секунд
+    past_time = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
     users['last_command_time'] = past_time
     save_users(users)
     return len(users)
@@ -186,9 +184,9 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_time_str = user_row.iloc[0]['last_command_time']
         if pd.notna(last_time_str):
             last_time = datetime.fromisoformat(last_time_str)
-            if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
-                remaining = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last_time)
-                await update.message.reply_text(f"⏳ Кулдаун! Следующий жук через {remaining.seconds // 3600} ч. { (remaining.seconds // 60) % 60 } мин.")
+            if datetime.now() - last_time < timedelta(seconds=COOLDOWN_SECONDS):
+                remaining = timedelta(seconds=COOLDOWN_SECONDS) - (datetime.now() - last_time)
+                await update.message.reply_text(f"⏳ Подожди еще {remaining.seconds} сек.!")
                 return
 
     bug_list = get_bug_list()
@@ -256,99 +254,141 @@ async def new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 group_users = users[users['chat_id'] == chat.id]
                 for g_idx in group_users.index:
-                    users.at[g_idx, 'last_command_time'] = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
+                    users.at[g_idx, 'last_command_time'] = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
                 save_users(users)
             
             sulki.at[idx, 'chat_id'] = chat.id
         save_sulki(sulki)
         await update.message.reply_text("🎁 Реферальная программа активирована! Пригласивший получил бонусных жуков, а кулдаун в группе сброшен.")
 
-# --- НОВАЯ КОМАНДА: HELP ---
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- ПРОФИЛЬ ИГРОКА ---
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
+    
+    if chat.type not in ['group', 'supergroup']:
+        await update.message.reply_text("Команда работает только в группах!")
+        return
+        
+    users = load_users()
+    user_row = users[(users['user_id'] == user.id) & (users['chat_id'] == chat.id)]
+    
+    if user_row.empty:
+        await update.message.reply_text("У тебя пока нет пойманных жуков. Напиши /bugs!")
+        return
+        
+    collection = json.loads(user_row.iloc[0]['collection_json'])
+    total_bugs = sum(collection.values())
+    
+    text = f"👤 <b>Профиль {user.first_name}</b>\n\n"
+    text += f"🐞 Всего собрано: <b>{total_bugs}</b>\n"
+    text += f"📦 Уникальных видов: <b>{len(collection)}</b>\n\n"
+    text += "<b>Твоя коллекция:</b>\n"
+    
+    # Сортируем по количеству
+    sorted_col = sorted(collection.items(), key=lambda x: x[1], reverse=True)
+    for bug, count in sorted_col[:10]: # Показываем топ-10
+        text += f"• {bug} — {count} шт.\n"
+        
+    if len(sorted_col) > 10:
+        text += f"...и еще {len(sorted_col) - 10} видов."
+        
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# --- ТОП ИГРОКОВ ---
+async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type not in ['group', 'supergroup']:
+        await update.message.reply_text("Команда работает только в группах!")
+        return
+        
+    users = load_users()
+    group_users = users[users['chat_id'] == chat.id]
+    
+    if group_users.empty:
+        await update.message.reply_text("В этой группе еще никто не ловил жуков.")
+        return
+        
+    leaderboard = []
+    for _, row in group_users.iterrows():
+        try:
+            collection = json.loads(row['collection_json'])
+            total = sum(collection.values())
+            leaderboard.append((row['username'], total))
+        except:
+            pass
+            
+    leaderboard.sort(key=lambda x: x[1], reverse=True)
+    
+    text = "🏆 <b>Топ охотников за жуками:</b>\n\n"
+    for i, (username, total) in enumerate(leaderboard[:10], 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        text += f"{medal} @{username} — {total} жуков\n"
+        
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# --- HELP ---
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
     
     text = (
         "🐞 <b>Охота на жуков — Справка</b>\n\n"
         "Добро пожаловать в игру! Собирай забавных жуков, соревнуйся с друзьями и приглашай новых участников.\n\n"
         "📜 <b>Доступные команды:</b>\n"
-        "• /bugs — Поймать случайного жука (доступно раз в 2 часа)\n"
-        "• /help — Показать это сообщение\n"
-        "• /start — Перезапустить бота\n\n"
+        "• /bugs — Поймать случайного жука\n"
+        "• /profile — Посмотреть свою коллекцию\n"
+        "• /top — Топ игроков в этой группе\n"
+        "• /help — Показать это сообщение\n\n"
         "🎁 <b>Реферальная программа:</b>\n"
-        "Используй кнопку «Поделиться ссылкой» после ловли жука. Когда твой друг перейдет по ссылке и добавит бота в <b>свою группу</b>:\n"
-        "1. Ты получишь <b>3 бонусных жука</b> в коллекцию.\n"
-        "2. У <b>всей группы</b> сбросится кулдаун.\n\n"
-        "👑 <b>Для администратора:</b>\n"
-        "• /ex — Аналитика бота\n"
-        "• /ad [текст] — Сделать рассылку во все группы и сбросить кулдаун у всех\n"
+        "Нажми «Поделиться ссылкой» после ловли жука. Когда друг перейдет по ней и добавит бота в <b>свою группу</b>:\n"
+        "1. Ты получишь <b>3 бонусных жука</b>.\n"
+        "2. У <b>всей группы</b> сбросится кулдаун.\n"
     )
     
-    # Если админ, можно сделать красивую кнопку для проверки аналитики
     if user.id == ADMIN_ID:
+        text += "\n👑 <b>Для администратора:</b>\n• /ex — Аналитика\n• /ad [текст] — Рассылка"
         keyboard = [[InlineKeyboardButton("📊 Открыть аналитику", callback_data="admin_ex")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- НОВАЯ КОМАНДА: AD (Реклама) ---
+# --- AD ---
 async def ad_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if user.id != ADMIN_ID:
-        return
+    if user.id != ADMIN_ID: return
         
     ad_text = " ".join(context.args)
     if not ad_text:
-        await update.message.reply_text(
-            "⚠️ <b>Как использовать:</b>\n"
-            "Отправь команду: <code>/ad Текст вашей рекламы</code>\n\n"
-            "Бот разошлет это сообщение во все группы, где он есть, и <b>сбросит кулдаун у всех игроков</b>.",
-            parse_mode=ParseMode.HTML
-        )
+        await update.message.reply_text("⚠️ Использование: <code>/ad Текст вашей рекламы</code>", parse_mode=ParseMode.HTML)
         return
 
-    # Получаем список уникальных chat_id из базы
     users_df = load_users()
     if users_df.empty:
-        await update.message.reply_text("❌ База пользователей пуста, некого оповещать.")
+        await update.message.reply_text("❌ База пуста.")
         return
         
     unique_chats = users_df['chat_id'].dropna().unique()
-    
-    # Сбрасываем кулдаун у всех
     count_users = reset_all_cooldowns()
     
-    await update.message.reply_text(f"🚀 Начинаю рассылку в {len(unique_chats)} чатов. Кулдаун сброшен у {count_users} записей пользователей.")
+    await update.message.reply_text(f"🚀 Рассылка в {len(unique_chats)} чатов. Кулдаун сброшен у {count_users} записей.")
     
     success_count = 0
     error_count = 0
-    
-    ad_message = f"📢 <b>Объявление:</b>\n\n{ad_text}\n\n🎉 <i>Кулдаун на ловлю жуков сброшен у всех игроков! Скорее пишите /bugs!</i>"
+    ad_message = f"📢 <b>Объявление:</b>\n\n{ad_text}\n\n🎉 <i>Кулдаун сброшен! Скорее пишите /bugs!</i>"
     
     for chat_id in unique_chats:
         try:
-            # Отправляем рекламное сообщение в чат
             await context.bot.send_message(chat_id=int(chat_id), text=ad_message, parse_mode=ParseMode.HTML)
             success_count += 1
-            # Небольшая пауза, чтобы Telegram не забанил бота за спам (лимит 30 сообщений в секунду)
             await asyncio.sleep(0.1) 
-        except Exception as e:
-            # Если бота удалили из группы или он заблокирован
+        except Exception:
             error_count += 1
-            logger.error(f"Ошибка рассылки в чат {chat_id}: {e}")
             
-    await update.message.reply_text(
-        f"✅ <b>Рассылка завершена!</b>\n"
-        f"Успешно отправлено: {success_count}\n"
-        f"Ошибок (бот удален/заблокирован): {error_count}",
-        parse_mode=ParseMode.HTML
-    )
+    await update.message.reply_text(f"✅ <b>Готово!</b>\nУспешно: {success_count}\nОшибок: {error_count}", parse_mode=ParseMode.HTML)
 
-# --- Аналитика (/ex) ---
+# --- EX ---
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ У вас нет прав для этой команды.")
-        return
+    if update.effective_user.id != ADMIN_ID: return
     
     ex_df = pd.read_csv(EX_FILE)
     users_df = load_users()
@@ -362,15 +402,24 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- Обработчик инлайн кнопки для админа ---
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
     if query.data == "admin_ex" and update.effective_user.id == ADMIN_ID:
-        # Перенаправляем на логику ex_command
         update.message = query.message
         await ex_command(update, context)
+
+# --- УСТАНОВКА МЕНЮ КОМАНД ---
+async def post_init(application):
+    """Эта функция автоматически настраивает синюю кнопку 'Меню' в Telegram."""
+    commands = [
+        BotCommand("bugs", "🐞 Поймать жука"),
+        BotCommand("profile", "👤 Мой профиль"),
+        BotCommand("top", "🏆 Топ игроков"),
+        BotCommand("help", "📜 Помощь"),
+    ]
+    await application.bot.set_my_commands(commands)
+    print("✅ Меню команд успешно настроено.")
 
 def main():
     if not BOT_TOKEN:
@@ -384,18 +433,18 @@ def main():
     init_csv_files()
     download_and_extract_bugs()
     
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    # post_init позволяет настроить меню команд при старте
+    app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
     
-    # Регистрация команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("bugs", bugs_command))
+    app.add_handler(CommandHandler("profile", profile_command)) # Новая команда
+    app.add_handler(CommandHandler("top", top_command))         # Новая команда
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("ex", ex_command))
-    app.add_handler(CommandHandler("ad", ad_command)) # Новая команда
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
+    app.add_handler(CommandHandler("ad", ad_command))
     
-    # Обработчик кнопок
-    from telegram.ext import CallbackQueryHandler
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
     app.add_handler(CallbackQueryHandler(button_callback))
     
     print("✅ Бот успешно запущен и готов к работе! Ожидание команд...\n")
