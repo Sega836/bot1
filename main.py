@@ -310,8 +310,8 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{medal} @{username} — {total} жуков\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+# --- СПРАВКА ДЛЯ ВСЕХ ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
     text = (
         "🐞 <b>Охота на жуков — Справка</b>\n\n"
         "📜 <b>Доступные команды:</b>\n"
@@ -323,16 +323,48 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎁 <b>Реферальная программа:</b>\n"
         "Отправь ссылку другу. Как только он перейдет по ней, ты сразу получишь <b>3 бонусных жука</b>!"
     )
-    if user.id == ADMIN_ID:
-        text += (
-            "\n\n👑 <b>Для администратора:</b>\n"
-            "• /ex — Графики за 7 дней\n"
-            "• /exall — Графики за всё время\n"
-            "• /an (ответом) — Рассылка\n"
-            "• /do — Скачать базы\n"
-            "• /deluser (ответом) — Удалить юзера\n"
-            "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ"
-        )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# --- АДМИН-СПРАВКА ---
+async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    text = (
+        "👑 <b>Команды администратора</b>\n\n"
+        "📊 <b>Статистика и аналитика:</b>\n"
+        "• /stats — Текстовая статистика (всего юзеров, кликов, за 7 дней)\n"
+        "• /ex — Графики за 7 дней\n"
+        "• /exall — Графики за всё время\n\n"
+        "🛠 <b>Управление:</b>\n"
+        "• /an (ответом) — Рассылка\n"
+        "• /do — Скачать базы данных\n"
+        "• /deluser (ответом) — Удалить юзера из группы\n"
+        "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# --- СТАТИСТИКА (ТЕКСТОМ) ---
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    users_df = load_users()
+    analytics_df = pd.read_csv(ANALYTICS_FILE)
+    
+    total_users = len(users_df)
+    total_bugs = analytics_df['bugs_clicked'].sum() if not analytics_df.empty else 0
+    
+    # Статистика за 7 дней
+    last_7_days = analytics_df.tail(7)
+    bugs_7d = last_7_days['bugs_clicked'].sum() if not last_7_days.empty else 0
+    users_7d = last_7_days['new_users'].sum() if not last_7_days.empty else 0
+    
+    text = (
+        f"📈 <b>Статистика бота</b>\n\n"
+        f"👥 Всего игроков в боте: <b>{total_users}</b>\n"
+        f"🐞 Всего нажатий /bugs: <b>{total_bugs}</b>\n\n"
+        f"<b>За последние 7 дней:</b>\n"
+        f"🐞 Нажатий /bugs: <b>{bugs_7d}</b>\n"
+        f"🆕 Пришло новых игроков: <b>{users_7d}</b>"
+    )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 # --- ГЕНЕРАЦИЯ ГРАФИКОВ ---
@@ -367,7 +399,6 @@ async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Пока нет данных для графиков.")
         return
 
-    # Берем последние 7 дней
     df_plot = analytics_df.tail(7)
     labels = df_plot['date'].tolist()
     url_bugs, url_users = generate_chart_url(
@@ -389,7 +420,6 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Пока нет данных для графиков.")
         return
 
-    # Берем всё время
     if len(analytics_df) > 30:
         analytics_df['month'] = pd.to_datetime(analytics_df['date']).dt.strftime('%Y-%m')
         df_plot = analytics_df.groupby('month').sum().reset_index()
@@ -497,7 +527,6 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ <b>Пользователь удален.</b>", parse_mode=ParseMode.HTML)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Этот обработчик больше не нужен для аналитики, но оставлен на будущее
     query = update.callback_query
     await query.answer()
 
@@ -525,8 +554,13 @@ def main():
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("top", top_command))
     app.add_handler(CommandHandler("help", help_command))
+    
+    # Новые админские команды
+    app.add_handler(CommandHandler("adminhelp", adminhelp_command))
+    app.add_handler(CommandHandler("stats", stats_command))
+    
     app.add_handler(CommandHandler("ex", ex_command))
-    app.add_handler(CommandHandler("exall", exall_command)) # Новая команда
+    app.add_handler(CommandHandler("exall", exall_command))
     app.add_handler(CommandHandler("an", an_command))
     app.add_handler(CommandHandler("do", do_command))
     app.add_handler(CommandHandler("deluser", deluser_command))
