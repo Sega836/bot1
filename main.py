@@ -67,6 +67,7 @@ def download_and_extract_bugs():
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
         
+        # Очищаем старую папку
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
@@ -75,6 +76,7 @@ def download_and_extract_bugs():
         bugs_list = []
 
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
+            # Ищем nomera.txt
             nomera_filename = None
             for name in z.namelist():
                 if name.lower().endswith("nomera.txt"):
@@ -85,6 +87,7 @@ def download_and_extract_bugs():
                 print(f"📄 [ЛОГ] Найден файл с названиями: {nomera_filename}")
                 raw_bytes = z.read(nomera_filename)
                 
+                # Читаем с разными кодировками
                 content = ""
                 for encoding in ['utf-8', 'cp1251', 'cp866']:
                     try:
@@ -108,18 +111,23 @@ def download_and_extract_bugs():
             else:
                 print("⚠️ [ЛОГ] nomera.txt не найден внутри архива.")
 
+            # ИСПРАВЛЕНИЕ: Сохраняем картинки строго в корень папки LOCAL_IMAGE_DIR
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    # Берем только само имя файла (например, "1.jpg"), отбрасывая пути ("Bugs/1.jpg")
+                    filename = os.path.basename(info.filename).lower()
+                    
                     source = z.open(info.filename)
-                    target_path = os.path.join(LOCAL_IMAGE_DIR, info.filename)
-                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    target_path = os.path.join(LOCAL_IMAGE_DIR, filename)
+                    
                     with open(target_path, "wb") as target:
                         target.write(source.read())
 
+        # Сохраняем маппинг (Название -> Имя файла)
         final_mapping = {}
         for file in os.listdir(LOCAL_IMAGE_DIR):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                file_id = os.path.splitext(file)[0]
+                file_id = os.path.splitext(file)[0] # Получаем "1" из "1.jpg"
                 display_name = mapping.get(file_id, file_id)
                 final_mapping[display_name] = file
         
@@ -136,6 +144,7 @@ def download_and_extract_bugs():
             
         print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs_list)}")
         print(f"🐞 Примеры названий: {bugs_list[:5]}")
+        print(f"📁 Файлы в папке: {os.listdir(LOCAL_IMAGE_DIR)[:5]}")
         return True
         
     except Exception as e:
@@ -147,7 +156,7 @@ def get_bug_list():
         with open(BUGS_LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return []
 
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПОИСКА (ТЕПЕРЬ 100% РАБОТАЕТ) ---
+# --- ФУНКЦИЯ ПОИСКА КАРТИНКИ (УПРОЩЕНА И ГАРАНТИРУЕТ РАБОТУ) ---
 def get_bug_image_path(bug_name):
     if not os.path.exists(MAPPING_FILE):
         return None
@@ -159,18 +168,16 @@ def get_bug_image_path(bug_name):
     if not filename:
         return None
         
-    # Проверяем наличие файла в папке (перебираем возможные расширения)
+    # Проверяем наличие файла в папке
+    test_path = os.path.join(LOCAL_IMAGE_DIR, filename)
+    if os.path.exists(test_path):
+        return test_path
+        
+    # Если расширение не совпало, пробуем найти по базовому имени
     file_base = os.path.splitext(filename)[0]
-    
-    for ext in ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.webp', '.WEBP']:
-        test_path = os.path.join(LOCAL_IMAGE_DIR, f"{file_base}{ext}")
-        if os.path.exists(test_path):
-            return test_path
-            
-    # Если по какой-то причине расширение не совпало, просто ищем файл с таким ID
-    for file in os.listdir(LOCAL_IMAGE_DIR):
-        if os.path.splitext(file)[0] == file_base:
-            return os.path.join(LOCAL_IMAGE_DIR, file)
+    for f in os.listdir(LOCAL_IMAGE_DIR):
+        if os.path.splitext(f)[0] == file_base:
+            return os.path.join(LOCAL_IMAGE_DIR, f)
             
     return None
 
@@ -300,7 +307,9 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with open(image_path, 'rb') as photo:
                 await update.message.reply_photo(photo=photo, caption=caption, parse_mode=ParseMode.HTML)
-        except: await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
+        except Exception as e: 
+            logger.error(f"Ошибка отправки фото: {e}")
+            await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
     else:
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
