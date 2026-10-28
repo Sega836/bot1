@@ -12,7 +12,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 
 # --- Конфигурация ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-# Токен Яндекс.Диска теперь прямо в коде
 YANDEX_TOKEN = "y0__wgBELWr7MIHGNuWAyCsvq7BGTDq4puDCH-DErd6M12ptPH6G-hTU0f8qayp"
 ADMIN_ID = 6597229121
 
@@ -21,7 +20,6 @@ DATA_DIR = os.environ.get("DATA_DIR", "/app/data")
 try:
     os.makedirs(DATA_DIR, exist_ok=True)
 except PermissionError:
-    # Если вдруг запускаем локально и нет прав на /app, используем текущую папку
     DATA_DIR = "data"
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -51,10 +49,14 @@ def download_and_extract_bugs():
     try:
         logger.info("Запрос к API Яндекс.Диска...")
         resp = requests.get(meta_url, headers=headers, params=params)
-        resp.raise_for_status()
-        meta = resp.json()
         
+        if resp.status_code != 200:
+            logger.error(f"Ошибка API Яндекс.Диска: {resp.status_code} - {resp.text}")
+            return
+            
+        meta = resp.json()
         download_href = meta.get("file")
+        
         if not download_href:
             dl_url = "https://cloud-api.yandex.net/v1/disk/resources/download"
             dl_resp = requests.get(dl_url, headers=headers, params=params)
@@ -69,14 +71,32 @@ def download_and_extract_bugs():
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
         
+        # Очищаем папку перед распаковкой
+        for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
+            for name in files:
+                os.remove(os.path.join(root, name))
+            for name in dirs:
+                os.rmdir(os.path.join(root, name))
+
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
             z.extractall(LOCAL_IMAGE_DIR)
-        logger.info(f"Картинки жуков успешно распакованы в {LOCAL_IMAGE_DIR}")
+        logger.info(f"Архив распакован в {LOCAL_IMAGE_DIR}")
         
-        bugs = [f.split('.')[0] for f in os.listdir(LOCAL_IMAGE_DIR) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        # РЕКУРСИВНЫЙ поиск картинок
+        bugs = []
+        for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    # Берем имя файла без расширения как название жука
+                    bug_name = os.path.splitext(file)[0]
+                    bugs.append(bug_name)
+                    
+        # Убираем дубликаты, если есть
+        bugs = list(set(bugs))
+        
         with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f:
             json.dump(bugs, f, ensure_ascii=False)
-        logger.info(f"Сформирован список из {len(bugs)} жуков.")
+        logger.info(f"Сформирован список из {len(bugs)} жуков. Примеры: {bugs[:5]}")
             
     except Exception as e:
         logger.error(f"Ошибка при работе с Яндекс.Диском: {e}")
@@ -85,13 +105,14 @@ def get_bug_list():
     if os.path.exists(BUGS_LIST_FILE):
         with open(BUGS_LIST_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return ["Жук-пожарник", "Жук-носорог", "Жук-олень", "Колорадский жук"]
+    return []
 
 def get_bug_image_path(bug_name):
-    for ext in ['.png', '.jpg', '.jpeg']:
-        path = os.path.join(LOCAL_IMAGE_DIR, f"{bug_name}{ext}")
-        if os.path.exists(path):
-            return path
+    # Ищем картинку во всех вложенных папках
+    for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
+        for file in files:
+            if os.path.splitext(file)[0] == bug_name and file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                return os.path.join(root, file)
     return None
 
 # --- Работа с CSV ---
@@ -155,7 +176,7 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     bug_list = get_bug_list()
     if not bug_list:
-        await update.message.reply_text("База жуков пуста. Обратитесь к администратору.")
+        await update.message.reply_text("База жуков пуста. Обратитесь к администратору.\n(Админ, проверь логи, возможно архив не скачался или в нем нет картинок).")
         return
     
     random_bug = random.choice(bug_list)
@@ -166,8 +187,12 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     caption = f"🎉 {user.mention_html()}, ты поймал **{random_bug}**!\n\nОн добавлен в твою коллекцию."
     
     if image_path and os.path.exists(image_path):
-        with open(image_path, 'rb') as photo:
-            await update.message.reply_photo(photo=photo, caption=caption, parse_mode='HTML')
+        try:
+            with open(image_path, 'rb') as photo:
+                await update.message.reply_photo(photo=photo, caption=caption, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Ошибка при отправке фото: {e}")
+            await update.message.reply_text(caption + "\n(Не удалось загрузить фото жука)", parse_mode='HTML')
     else:
         await update.message.reply_text(caption, parse_mode='HTML')
     
