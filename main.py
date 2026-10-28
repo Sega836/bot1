@@ -51,7 +51,6 @@ def download_and_extract_bugs():
     params = {"path": BUGS_ARCHIVE_PATH}
     
     try:
-        # 1. Получаем ссылку на скачивание ZIP
         resp = requests.get(meta_url, headers=headers, params=params)
         if resp.status_code != 200: 
             print(f"❌ [ЛОГ] Не удалось найти {BUGS_ARCHIVE_PATH} на Диске.")
@@ -65,11 +64,9 @@ def download_and_extract_bugs():
 
         if not download_href: return False
         
-        # 2. Качаем архив
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
         
-        # 3. Очищаем старую папку
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
@@ -77,7 +74,6 @@ def download_and_extract_bugs():
         mapping = {}
         bugs_list = []
 
-        # 4. Открываем архив и ищем nomera.txt
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
             nomera_filename = None
             for name in z.namelist():
@@ -89,7 +85,6 @@ def download_and_extract_bugs():
                 print(f"📄 [ЛОГ] Найден файл с названиями: {nomera_filename}")
                 raw_bytes = z.read(nomera_filename)
                 
-                # Пытаемся прочитать с разными кодировками
                 content = ""
                 for encoding in ['utf-8', 'cp1251', 'cp866']:
                     try:
@@ -98,14 +93,11 @@ def download_and_extract_bugs():
                     except UnicodeDecodeError:
                         continue
                 
-                # Умный парсинг: ищем строки, где есть число, а затем текст
-                lines = content.splitlines() # splitlines лучше, чем split('\n')
+                lines = content.splitlines()
                 for line in lines:
                     line = line.strip()
                     if not line: continue
                     
-                    # Ищем формат "1, Название", "1 Название", "1: Название", "1 - Название"
-                    # \s* - любые пробелы, [,\-:]? - необязательный разделитель
                     match = re.match(r'^(\d+)\s*[,\-:]?\s*(.*)$', line)
                     if match:
                         num = match.group(1).strip()
@@ -114,19 +106,16 @@ def download_and_extract_bugs():
                             mapping[num] = name
                             bugs_list.append(name)
             else:
-                print("⚠️ [ЛОГ] nomera.txt не найден внутри архива. Будут использоваться имена файлов.")
+                print("⚠️ [ЛОГ] nomera.txt не найден внутри архива.")
 
-            # 5. Распаковываем картинки
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    # Сохраняем под оригинальным именем (1.jpg), чтобы не ломать связку
                     source = z.open(info.filename)
                     target_path = os.path.join(LOCAL_IMAGE_DIR, info.filename)
                     os.makedirs(os.path.dirname(target_path), exist_ok=True)
                     with open(target_path, "wb") as target:
                         target.write(source.read())
 
-        # 6. Сохраняем маппинг (Название -> Файл)
         final_mapping = {}
         for file in os.listdir(LOCAL_IMAGE_DIR):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
@@ -134,7 +123,6 @@ def download_and_extract_bugs():
                 display_name = mapping.get(file_id, file_id)
                 final_mapping[display_name] = file
         
-        # Если список пуст (nomera.txt не было), заполняем именами файлов
         if not bugs_list:
             bugs_list = list(final_mapping.keys())
         
@@ -159,15 +147,31 @@ def get_bug_list():
         with open(BUGS_LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return []
 
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПОИСКА (ТЕПЕРЬ 100% РАБОТАЕТ) ---
 def get_bug_image_path(bug_name):
-    if os.path.exists(MAPPING_FILE):
-        with open(MAPPING_FILE, "r", encoding="utf-8") as f:
-            mapping = json.load(f)
-            filename = mapping.get(bug_name)
-            if filename:
-                path = os.path.join(LOCAL_IMAGE_DIR, filename)
-                if os.path.exists(path):
-                    return path
+    if not os.path.exists(MAPPING_FILE):
+        return None
+        
+    with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+        mapping = json.load(f)
+        
+    filename = mapping.get(bug_name)
+    if not filename:
+        return None
+        
+    # Проверяем наличие файла в папке (перебираем возможные расширения)
+    file_base = os.path.splitext(filename)[0]
+    
+    for ext in ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.webp', '.WEBP']:
+        test_path = os.path.join(LOCAL_IMAGE_DIR, f"{file_base}{ext}")
+        if os.path.exists(test_path):
+            return test_path
+            
+    # Если по какой-то причине расширение не совпало, просто ищем файл с таким ID
+    for file in os.listdir(LOCAL_IMAGE_DIR):
+        if os.path.splitext(file)[0] == file_base:
+            return os.path.join(LOCAL_IMAGE_DIR, file)
+            
     return None
 
 # --- Работа с CSV ---
@@ -288,8 +292,10 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_bug_to_user(user_id, user.username or user.first_name, chat_id, random_bug)
     log_event(user_id, chat_id, "bugs_command", random_bug)
     update_daily_analytics("bugs")
+    
     image_path = get_bug_image_path(random_bug)
     caption = f"🎉 {user.mention_html()}, ты поймал <b>{random_bug}</b>!\n\nОн добавлен в твою коллекцию."
+    
     if image_path and os.path.exists(image_path):
         try:
             with open(image_path, 'rb') as photo:
@@ -488,7 +494,6 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_users(users)
     await update.message.reply_text(f"✅ <b>Пользователь удален.</b>", parse_mode=ParseMode.HTML)
 
-# --- КОМАНДА /fixbugs ---
 async def fixbugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     msg = await update.message.reply_text("🔄 Перекачиваю архив и ищу nomera.txt...")
