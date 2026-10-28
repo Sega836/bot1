@@ -108,10 +108,8 @@ def get_bug_image_path(bug_name):
 def init_csv_files():
     if not os.path.exists(USERS_FILE):
         pd.DataFrame(columns=["user_id", "username", "chat_id", "collection_json", "last_command_time"]).to_csv(USERS_FILE, index=False)
-    
     if not os.path.exists(SULKI_FILE):
         pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE, index=False)
-        
     if not os.path.exists(EX_FILE):
         pd.DataFrame(columns=["timestamp", "user_id", "chat_id", "action", "bug_name"]).to_csv(EX_FILE, index=False)
 
@@ -151,7 +149,120 @@ def reset_cooldown_in_chat(chat_id):
         users.at[idx, 'last_command_time'] = past_time
     save_users(users)
 
-# --- Логика игры ---
+# --- 1. НОВОЕ ПРИВЕТСТВИЕ В ЛС ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Если перешли по реферальной ссылке
+    if context.args and chat.type == 'private':
+        referrer_id = context.args[0]
+        try: referrer_id = int(referrer_id)
+        except ValueError: referrer_id = None
+        
+        if referrer_id and referrer_id != user.id:
+            sulki = load_sulki()
+            existing = sulki[(sulki['invited_user_id'] == user.id) & (sulki['user_id'] == referrer_id)]
+            
+            if existing.empty:
+                new_row = {"ref_link": str(referrer_id), "chat_id": "pending", "user_id": referrer_id, "invited_user_id": user.id, "created_at": datetime.now().isoformat()}
+                sulki = pd.concat([sulki, pd.DataFrame([new_row])], ignore_index=True)
+                save_sulki(sulki)
+                
+                users_df = load_users()
+                ref_groups = users_df[users_df['user_id'] == referrer_id]
+                
+                if not ref_groups.empty:
+                    ref_groups = ref_groups.sort_values(by='last_command_time', ascending=False)
+                    target_chat_id = int(ref_groups.iloc[0]['chat_id'])
+                    
+                    bug_list = get_bug_list()
+                    if bug_list:
+                        for _ in range(3):
+                            add_bug_to_user(referrer_id, "referrer", target_chat_id, random.choice(bug_list))
+                    
+                    reset_cooldown_in_chat(target_chat_id)
+                    
+                    ref_username = ref_groups.iloc[0]['username']
+                    msg = (
+                        f"🎁 <b>Реферальная программа!</b>\n\n"
+                        f"Пользователь {user.mention_html()} перешел по реферальной ссылке.\n"
+                        f"Пригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b> в коллекцию!\n"
+                        f"⚡ У <b>всей группы</b> сброшен кулдаун!"
+                    )
+                    try:
+                        await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        logger.error(f"Не удалось отправить уведомление: {e}")
+
+            await update.message.reply_text(
+                f"👋 Привет, {user.first_name}!\n\n"
+                f"Ты перешёл по приглашению. Пригласивший уже получил своих жуков!\n"
+                f"Добавь меня в свою группу и начинай ловить жуков: /bugs"
+            )
+            return
+    
+    # Красивое приветствие в ЛС (как на скриншоте)
+    if chat.type == 'private':
+        text = (
+            f"Привет! Я <b>Жук-Бот</b> — бот для чатов (групп)\n\n"
+            f"Смысл бота: бот работает только в чатах. Раз в {COOLDOWN_SECONDS} секунд (пока тестируем) игрок может прописать команду /bugs, где в ответ получит от бота случайного жука.\n\n"
+            f"Если у тебя есть вопросы — пиши команду: /help"
+        )
+        # Кнопка "Добавить в группу"
+        keyboard = [[InlineKeyboardButton("➕ Добавить в группу", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        # Приветствие в группе
+        await update.message.reply_text(f"👋 Привет, {user.first_name}! Я готов к работе.\nНапиши /bugs, чтобы начать ловить жуков!")
+
+# --- 2. КОМАНДА /deluser (Удаление из базы для тестов) ---
+async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Доступно только админу
+    if user.id != ADMIN_ID: return
+    
+    # Если команда вызвана ОТВЕТОМ (Reply) на сообщение пользователя
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        target_id = target_user.id
+    else:
+        await update.message.reply_text("⚠️ Чтобы удалить пользователя, ответьте (Reply) на его сообщение командой `/deluser`.", parse_mode=ParseMode.MARKDOWN)
+        return
+        
+    if chat.type not in ['group', 'supergroup']:
+        await update.message.reply_text("Удалять можно только из групп.")
+        return
+
+    # Читаем базу
+    users = load_users()
+    
+    # Ищем пользователя в этой конкретной группе
+    user_row = users[(users['user_id'] == target_id) & (users['chat_id'] == chat.id)]
+    
+    if user_row.empty:
+        await update.message.reply_text(f"❌ Пользователь {target_user.first_name} не найден в базе этой группы.")
+        return
+        
+    # Удаляем его
+    users = users.drop(user_row.index)
+    save_users(users)
+    
+    # Удаляем его следы из реферальной базы (если он переходил по ссылкам)
+    sulki = load_sulki()
+    sulki = sulki[sulki['invited_user_id'] != target_id]
+    sulki = sulki[sulki['user_id'] != target_id]
+    save_sulki(sulki)
+    
+    await update.message.reply_text(
+        f"✅ <b>Пользователь {target_user.first_name} (ID: {target_id}) успешно удален из базы этой группы.</b>\n\n"
+        f"Теперь вы можете снова протестировать реферальную ссылку с его аккаунта!",
+        parse_mode=ParseMode.HTML
+    )
+
+# --- Остальные функции (Логика игры) ---
 async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -196,79 +307,11 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
 
-# --- СТАРТ И РЕФЕРАЛЬНАЯ СИСТЕМА ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    
-    # Если перешли по реферальной ссылке
-    if context.args and chat.type == 'private':
-        referrer_id = context.args[0]
-        try: referrer_id = int(referrer_id)
-        except ValueError: referrer_id = None
-        
-        if referrer_id and referrer_id != user.id:
-            sulki = load_sulki()
-            existing = sulki[(sulki['invited_user_id'] == user.id) & (sulki['user_id'] == referrer_id)]
-            
-            if existing.empty:
-                # 1. Записываем в БД факт перехода
-                new_row = {
-                    "ref_link": str(referrer_id), 
-                    "chat_id": "pending", 
-                    "user_id": referrer_id, 
-                    "invited_user_id": user.id,
-                    "created_at": datetime.now().isoformat()
-                }
-                sulki = pd.concat([sulki, pd.DataFrame([new_row])], ignore_index=True)
-                save_sulki(sulki)
-                
-                # 2. Ищем, в какой группе играет пригласивший (последняя активная группа)
-                users_df = load_users()
-                ref_groups = users_df[users_df['user_id'] == referrer_id]
-                
-                if not ref_groups.empty:
-                    # Берем группу, где он играл последний раз
-                    ref_groups = ref_groups.sort_values(by='last_command_time', ascending=False)
-                    target_chat_id = int(ref_groups.iloc[0]['chat_id'])
-                    
-                    # 3. Начисляем 3 жука пригласившему в этой группе
-                    bug_list = get_bug_list()
-                    if bug_list:
-                        for _ in range(3):
-                            add_bug_to_user(referrer_id, "referrer", target_chat_id, random.choice(bug_list))
-                    
-                    # 4. Сбрасываем кулдаун ВСЕЙ группе
-                    reset_cooldown_in_chat(target_chat_id)
-                    
-                    # 5. Отправляем уведомление в эту группу
-                    ref_username = ref_groups.iloc[0]['username']
-                    msg = (
-                        f"🎁 <b>Реферальная программа!</b>\n\n"
-                        f"Пользователь {user.mention_html()} перешел по реферальной ссылке.\n"
-                        f"Пригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b> в коллекцию!\n"
-                        f"⚡ У <b>всей группы</b> сброшен кулдаун!"
-                    )
-                    try:
-                        await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
-                    except Exception as e:
-                        logger.error(f"Не удалось отправить уведомление в группу {target_chat_id}: {e}")
-
-            await update.message.reply_text(
-                f"👋 Привет, {user.first_name}!\n"
-                f"Ты перешёл по приглашению. Пригласивший уже получил своих жуков!\n"
-                f"Добавь меня в свою группу и начинай ловить жуков: /bugs"
-            )
-            return
-    
-    await update.message.reply_text(f"👋 Привет, {user.first_name}!\nЯ бот для коллекционирования жуков.\nДобавь меня в группу и используй /bugs, чтобы поймать жука!\n\nПосмотреть все команды: /help")
-
 async def new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ['group', 'supergroup']: return
     await update.message.reply_text("👋 Привет! Я готов к работе. Напиши /bugs, чтобы начать ловить жуков!")
 
-# --- КОМАНДА /ref (Кнопка в меню) ---
 async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ref_link = f"https://t.me/{context.bot.username}?start={user.id}"
@@ -338,7 +381,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Отправь ссылку другу. Как только он перейдет по ней, ты сразу получишь <b>3 бонусных жука</b>!"
     )
     if user.id == ADMIN_ID:
-        text += "\n\n👑 <b>Для администратора:</b>\n• /ex — Аналитика\n• /an (ответом) — Рассылка\n• /do — Скачать базы"
+        text += (
+            "\n\n👑 <b>Для администратора:</b>\n"
+            "• /ex — Аналитика\n"
+            "• /an (ответом) — Рассылка\n"
+            "• /do — Скачать базы\n"
+            "• /deluser (ответом) — Удалить юзера из БД группы"
+        )
         keyboard = [[InlineKeyboardButton("📊 Открыть аналитику", callback_data="admin_ex")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -356,7 +405,6 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if users_df.empty: return
     unique_chats = users_df['chat_id'].dropna().unique()
     
-    # Сброс кулдауна во всех чатах
     past_time = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
     users_df['last_command_time'] = past_time
     save_users(users_df)
@@ -433,6 +481,7 @@ def main():
     app.add_handler(CommandHandler("ex", ex_command))
     app.add_handler(CommandHandler("an", an_command))
     app.add_handler(CommandHandler("do", do_command))
+    app.add_handler(CommandHandler("deluser", deluser_command)) # Добавлена команда
     
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
     app.add_handler(CallbackQueryHandler(button_callback))
