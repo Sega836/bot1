@@ -326,20 +326,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == ADMIN_ID:
         text += (
             "\n\n👑 <b>Для администратора:</b>\n"
-            "• /ex — Аналитика\n"
+            "• /ex — Графики за 7 дней\n"
+            "• /exall — Графики за всё время\n"
             "• /an (ответом) — Рассылка\n"
             "• /do — Скачать базы\n"
             "• /deluser (ответом) — Удалить юзера\n"
             "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ"
         )
-        keyboard = [[InlineKeyboardButton("📊 Открыть аналитику", callback_data="admin_ex")]]
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- ФУНКЦИЯ ГЕНЕРАЦИИ ГРАФИКОВ ---
+# --- ГЕНЕРАЦИЯ ГРАФИКОВ ---
 def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line", chart_type_users="bar"):
-    # График жуков
     config_bugs = {
         "type": chart_type_bugs,
         "data": {
@@ -349,7 +346,6 @@ def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, c
         "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}
     }
     
-    # График юзеров
     config_users = {
         "type": chart_type_users,
         "data": {
@@ -363,89 +359,61 @@ def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, c
     url_users = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_users))}&w=600&h=300&bkg=white"
     return url_bugs, url_users
 
-# --- АНАЛИТИКА ---
+# --- КОМАНДЫ АНАЛИТИКИ ---
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    
-    ex_df = pd.read_csv(EX_FILE)
-    users_df = load_users()
-    
-    total_bugs = len(ex_df[ex_df['action'] == 'bugs_command']) if not ex_df.empty else 0
-    ref_success = len(ex_df[ex_df['action'] == 'ref_success']) if not ex_df.empty else 0
-    unique_users = ex_df[ex_df['action'] == 'bugs_command']['user_id'].nunique() if not ex_df.empty else 0
-    unique_chats = ex_df[ex_df['action'] == 'bugs_command']['chat_id'].nunique() if not ex_df.empty else 0
-    
-    text = (
-        f"📊 <b>Общая аналитика бота</b>\n\n"
-        f"🔹 Всего нажатий /bugs: {total_bugs}\n"
-        f"🔹 Успешных рефералов: {ref_success}\n"
-        f"🔹 Уникальных игроков: {unique_users}\n"
-        f"🔹 Уникальных групп: {unique_chats}\n"
-        f"🔹 Всего записей в БД: {len(users_df)}\n\n"
-        f"👇 Выберите период для просмотра графиков:"
-    )
-    # Кнопки для выбора периода
-    keyboard = [
-        [InlineKeyboardButton("📅 За 7 дней", callback_data="chart_7")],
-        [InlineKeyboardButton("🗓️ За всё время", callback_data="chart_all")]
-    ]
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def chart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    if update.effective_user.id != ADMIN_ID: return
-    
     analytics_df = pd.read_csv(ANALYTICS_FILE)
-    
     if analytics_df.empty:
-        await query.edit_message_text("❌ Пока нет данных для графиков. Поиграйте немного!")
+        await update.message.reply_text("❌ Пока нет данных для графиков.")
         return
-        
-    try:
-        if query.data == "chart_7":
-            # Берем последние 7 дней
-            df_plot = analytics_df.tail(7)
-            labels = df_plot['date'].tolist()
-            url_bugs, url_users = generate_chart_url(
-                labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
-                "🐞 Нажатия /bugs (7 дней)", "👤 Прирост игроков (7 дней)"
-            )
-            title = "📅 <b>Графики за последние 7 дней</b>"
-            
-        else: # chart_all
-            # Берем все время. Если дней много, сгруппируем по месяцам для читаемости
-            if len(analytics_df) > 30:
-                analytics_df['month'] = pd.to_datetime(analytics_df['date']).dt.strftime('%Y-%m')
-                df_plot = analytics_df.groupby('month').sum().reset_index()
-                labels = df_plot['month'].tolist()
-                chart_type = "bar"
-            else:
-                df_plot = analytics_df
-                labels = df_plot['date'].tolist()
-                chart_type = "line"
-                
-            url_bugs, url_users = generate_chart_url(
-                labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
-                "🐞 Нажатия /bugs (всё время)", "👤 Прирост игроков (всё время)",
-                chart_type_bugs=chart_type, chart_type_users="bar"
-            )
-            title = "🗓️ <b>Графики за всё время</b>"
-            
-        await query.edit_message_text(f"{title}\n\n⏳ Генерирую изображения...", parse_mode=ParseMode.HTML)
-        
-        # Отправляем картинки
-        await query.message.reply_photo(photo=url_bugs, caption="📈 График активности (нажатия /bugs)")
-        await asyncio.sleep(1)
-        await query.message.reply_photo(photo=url_users, caption="📊 График прироста новых игроков")
-        
-        # Удаляем сообщение "Генерирую..."
-        await query.message.delete()
-        
-    except Exception as e:
-        await query.message.reply_text(f"❌ Ошибка при создании графиков: {e}")
 
+    # Берем последние 7 дней
+    df_plot = analytics_df.tail(7)
+    labels = df_plot['date'].tolist()
+    url_bugs, url_users = generate_chart_url(
+        labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
+        "🐞 Нажатия /bugs (7 дней)", "👤 Прирост игроков (7 дней)"
+    )
+    
+    try:
+        await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (7 дней)")
+        await asyncio.sleep(1)
+        await update.message.reply_photo(photo=url_users, caption="📊 График прироста игроков (7 дней)")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    analytics_df = pd.read_csv(ANALYTICS_FILE)
+    if analytics_df.empty:
+        await update.message.reply_text("❌ Пока нет данных для графиков.")
+        return
+
+    # Берем всё время
+    if len(analytics_df) > 30:
+        analytics_df['month'] = pd.to_datetime(analytics_df['date']).dt.strftime('%Y-%m')
+        df_plot = analytics_df.groupby('month').sum().reset_index()
+        labels = df_plot['month'].tolist()
+        chart_type = "bar"
+    else:
+        df_plot = analytics_df
+        labels = df_plot['date'].tolist()
+        chart_type = "line"
+        
+    url_bugs, url_users = generate_chart_url(
+        labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
+        "🐞 Нажатия /bugs (всё время)", "👤 Прирост игроков (всё время)",
+        chart_type_bugs=chart_type, chart_type_users="bar"
+    )
+    
+    try:
+        await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (всё время)")
+        await asyncio.sleep(1)
+        await update.message.reply_photo(photo=url_users, caption="📊 График прироста игроков (всё время)")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     keyboard = [[InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ ВСЁ", callback_data="confirm_delete")], [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]]
@@ -529,11 +497,9 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ <b>Пользователь удален.</b>", parse_mode=ParseMode.HTML)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Этот обработчик больше не нужен для аналитики, но оставлен на будущее
     query = update.callback_query
     await query.answer()
-    if query.data == "admin_ex" and update.effective_user.id == ADMIN_ID:
-        update.message = query.message
-        await ex_command(update, context)
 
 async def post_init(application):
     commands = [
@@ -560,16 +526,14 @@ def main():
     app.add_handler(CommandHandler("top", top_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("ex", ex_command))
+    app.add_handler(CommandHandler("exall", exall_command)) # Новая команда
     app.add_handler(CommandHandler("an", an_command))
     app.add_handler(CommandHandler("do", do_command))
     app.add_handler(CommandHandler("deluser", deluser_command))
     app.add_handler(CommandHandler("del", del_command))
     
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
-    
     app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(confirm_delete|cancel_delete)$"))
-    app.add_handler(CallbackQueryHandler(chart_callback, pattern="^chart_"))
-    app.add_handler(CallbackQueryHandler(button_callback))
     
     print("✅ Бот успешно запущен!\n")
     app.run_polling()
