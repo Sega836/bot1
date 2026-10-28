@@ -48,35 +48,68 @@ def download_and_extract_bugs():
     params = {"path": BUGS_ARCHIVE_PATH}
     
     try:
+        # 1. Получаем ссылку на скачивание
         resp = requests.get(meta_url, headers=headers, params=params)
-        if resp.status_code != 200: return
+        if resp.status_code != 200: return False
         meta = resp.json()
         download_href = meta.get("file")
         if not download_href:
             dl_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/download", headers=headers, params=params)
             download_href = dl_resp.json().get("href")
 
-        if not download_href: return
+        if not download_href: return False
+        
+        # 2. Качаем архив
         file_resp = requests.get(download_href)
         
+        # 3. Очищаем старую папку
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
 
+        # 4. Распаковываем с принудительной проверкой кодировки
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
-            z.extractall(LOCAL_IMAGE_DIR)
+            for info in z.infolist():
+                if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
+                    # АВТОИСПРАВЛЕНИЕ КОДИРОВКИ
+                    filename = info.filename
+                    try:
+                        # Пробуем декодировать. Если получается - значит там кракозябры (cp437 -> utf-8)
+                        # Или cp437 -> cp1251 (зависит от того, как создавался архив)
+                        fixed_name = filename.encode('cp437').decode('utf-8')
+                    except:
+                        try:
+                            fixed_name = filename.encode('cp437').decode('cp1251')
+                        except:
+                            fixed_name = filename # Если не вышло, оставляем как есть
+                    
+                    # Если имя всё равно выглядит странно (много символов), берем оригинал
+                    if any(ord(c) > 0x4E00 for c in fixed_name):
+                         fixed_name = filename
+
+                    # Сохраняем файл с правильным именем
+                    source = z.open(info.filename)
+                    target_path = os.path.join(LOCAL_IMAGE_DIR, fixed_name)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with open(target_path, "wb") as target:
+                        target.write(source.read())
         
+        # 5. Сохраняем список имен
         bugs = []
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR):
             for file in files:
                 if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     bugs.append(os.path.splitext(file)[0])
+                    
         bugs = list(set(bugs))
         with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f:
             json.dump(bugs, f, ensure_ascii=False)
         print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs)}")
+        print(f"🐞 Примеры названий: {bugs[:10]}")
+        return True
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка: {e}")
+        return False
 
 def get_bug_list():
     if os.path.exists(BUGS_LIST_FILE):
@@ -310,7 +343,6 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{medal} @{username} — {total} жуков\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- СПРАВКА ДЛЯ ВСЕХ ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🐞 <b>Охота на жуков — Справка</b>\n\n"
@@ -325,13 +357,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- АДМИН-СПРАВКА ---
 async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     text = (
         "👑 <b>Команды администратора</b>\n\n"
         "📊 <b>Статистика и аналитика:</b>\n"
-        "• /stats — Текстовая статистика (всего юзеров, кликов, за 7 дней)\n"
+        "• /stats — Текстовая статистика\n"
         "• /ex — Графики за 7 дней\n"
         "• /exall — Графики за всё время\n\n"
         "🛠 <b>Управление:</b>\n"
@@ -342,17 +373,13 @@ async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- СТАТИСТИКА (ТЕКСТОМ) ---
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    
     users_df = load_users()
     analytics_df = pd.read_csv(ANALYTICS_FILE)
     
     total_users = len(users_df)
     total_bugs = analytics_df['bugs_clicked'].sum() if not analytics_df.empty else 0
-    
-    # Статистика за 7 дней
     last_7_days = analytics_df.tail(7)
     bugs_7d = last_7_days['bugs_clicked'].sum() if not last_7_days.empty else 0
     users_7d = last_7_days['new_users'].sum() if not last_7_days.empty else 0
@@ -367,45 +394,30 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- ГЕНЕРАЦИЯ ГРАФИКОВ ---
 def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line", chart_type_users="bar"):
     config_bugs = {
         "type": chart_type_bugs,
-        "data": {
-            "labels": labels,
-            "datasets": [{"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f", "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]
-        },
+        "data": {"labels": labels, "datasets": [{"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f", "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]},
         "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}
     }
-    
     config_users = {
         "type": chart_type_users,
-        "data": {
-            "labels": labels,
-            "datasets": [{"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]
-        },
+        "data": {"labels": labels, "datasets": [{"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]},
         "options": {"title": {"display": True, "text": title_users, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}
     }
-    
     url_bugs = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_bugs))}&w=600&h=300&bkg=white"
     url_users = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_users))}&w=600&h=300&bkg=white"
     return url_bugs, url_users
 
-# --- КОМАНДЫ АНАЛИТИКИ ---
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     analytics_df = pd.read_csv(ANALYTICS_FILE)
     if analytics_df.empty:
         await update.message.reply_text("❌ Пока нет данных для графиков.")
         return
-
     df_plot = analytics_df.tail(7)
     labels = df_plot['date'].tolist()
-    url_bugs, url_users = generate_chart_url(
-        labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
-        "🐞 Нажатия /bugs (7 дней)", "👤 Прирост игроков (7 дней)"
-    )
-    
+    url_bugs, url_users = generate_chart_url(labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(), "🐞 Нажатия /bugs (7 дней)", "👤 Прирост игроков (7 дней)")
     try:
         await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (7 дней)")
         await asyncio.sleep(1)
@@ -419,7 +431,6 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if analytics_df.empty:
         await update.message.reply_text("❌ Пока нет данных для графиков.")
         return
-
     if len(analytics_df) > 30:
         analytics_df['month'] = pd.to_datetime(analytics_df['date']).dt.strftime('%Y-%m')
         df_plot = analytics_df.groupby('month').sum().reset_index()
@@ -429,13 +440,7 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         df_plot = analytics_df
         labels = df_plot['date'].tolist()
         chart_type = "line"
-        
-    url_bugs, url_users = generate_chart_url(
-        labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(),
-        "🐞 Нажатия /bugs (всё время)", "👤 Прирост игроков (всё время)",
-        chart_type_bugs=chart_type, chart_type_users="bar"
-    )
-    
+    url_bugs, url_users = generate_chart_url(labels, df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(), "🐞 Нажатия /bugs (всё время)", "👤 Прирост игроков (всё время)", chart_type_bugs=chart_type, chart_type_users="bar")
     try:
         await update.message.reply_photo(photo=url_bugs, caption="📈 График активности (всё время)")
         await asyncio.sleep(1)
@@ -443,7 +448,6 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# --- ОСТАЛЬНЫЕ КОМАНДЫ ---
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     keyboard = [[InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ ВСЁ", callback_data="confirm_delete")], [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]]
@@ -453,7 +457,6 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if update.effective_user.id != ADMIN_ID: return
-    
     if query.data == "cancel_delete":
         await query.edit_message_text("✅ Удаление отменено.")
         return
@@ -477,11 +480,9 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_df = load_users()
     if users_df.empty: return
     unique_chats = users_df['chat_id'].dropna().unique()
-    
     past_time = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
     users_df['last_command_time'] = past_time
     save_users(users_df)
-    
     status_msg = await update.message.reply_text(f"🚀 Рассылка в {len(unique_chats)} чатов...")
     success, error = 0, 0
     ad_postfix = "🎉 <b>Только благодаря этой рекламе кулдаун на ловлю жуков был сброшен!</b> Скорее пишите /bugs!"
@@ -554,11 +555,8 @@ def main():
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("top", top_command))
     app.add_handler(CommandHandler("help", help_command))
-    
-    # Новые админские команды
     app.add_handler(CommandHandler("adminhelp", adminhelp_command))
     app.add_handler(CommandHandler("stats", stats_command))
-    
     app.add_handler(CommandHandler("ex", ex_command))
     app.add_handler(CommandHandler("exall", exall_command))
     app.add_handler(CommandHandler("an", an_command))
