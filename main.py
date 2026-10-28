@@ -36,7 +36,8 @@ BUGS_LIST_FILE = os.path.join(DATA_DIR, "bugs_list.json")
 ANALYTICS_FILE = os.path.join(DATA_DIR, "analytics.csv")
 MAPPING_FILE = os.path.join(DATA_DIR, "mapping.json")
 
-COOLDOWN_SECONDS = 5
+# ИЗМЕНЕНО: Кулдаун теперь 12 часов
+COOLDOWN_HOURS = 12
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -111,12 +112,10 @@ def download_and_extract_bugs():
             else:
                 print("⚠️ [ЛОГ] nomera.txt не найден внутри архива.")
 
-            # ИСПРАВЛЕНИЕ: Сохраняем картинки строго в корень папки LOCAL_IMAGE_DIR
+            # Сохраняем картинки строго в корень папки LOCAL_IMAGE_DIR
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                    # Берем только само имя файла (например, "1.jpg"), отбрасывая пути ("Bugs/1.jpg")
                     filename = os.path.basename(info.filename).lower()
-                    
                     source = z.open(info.filename)
                     target_path = os.path.join(LOCAL_IMAGE_DIR, filename)
                     
@@ -127,7 +126,7 @@ def download_and_extract_bugs():
         final_mapping = {}
         for file in os.listdir(LOCAL_IMAGE_DIR):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
-                file_id = os.path.splitext(file)[0] # Получаем "1" из "1.jpg"
+                file_id = os.path.splitext(file)[0]
                 display_name = mapping.get(file_id, file_id)
                 final_mapping[display_name] = file
         
@@ -144,7 +143,6 @@ def download_and_extract_bugs():
             
         print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs_list)}")
         print(f"🐞 Примеры названий: {bugs_list[:5]}")
-        print(f"📁 Файлы в папке: {os.listdir(LOCAL_IMAGE_DIR)[:5]}")
         return True
         
     except Exception as e:
@@ -156,7 +154,6 @@ def get_bug_list():
         with open(BUGS_LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return []
 
-# --- ФУНКЦИЯ ПОИСКА КАРТИНКИ (УПРОЩЕНА И ГАРАНТИРУЕТ РАБОТУ) ---
 def get_bug_image_path(bug_name):
     if not os.path.exists(MAPPING_FILE):
         return None
@@ -168,12 +165,10 @@ def get_bug_image_path(bug_name):
     if not filename:
         return None
         
-    # Проверяем наличие файла в папке
     test_path = os.path.join(LOCAL_IMAGE_DIR, filename)
     if os.path.exists(test_path):
         return test_path
         
-    # Если расширение не совпало, пробуем найти по базовому имени
     file_base = os.path.splitext(filename)[0]
     for f in os.listdir(LOCAL_IMAGE_DIR):
         if os.path.splitext(f)[0] == file_base:
@@ -236,7 +231,8 @@ def reset_cooldown_in_chat(chat_id):
     users = load_users()
     group_users = users[users['chat_id'] == chat_id]
     if group_users.empty: return
-    past_time = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
+    # ИЗМЕНЕНО: Сброс с учетом часов
+    past_time = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
     for idx in group_users.index:
         users.at[idx, 'last_command_time'] = past_time
     save_users(users)
@@ -268,7 +264,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"👋 Привет, {user.first_name}!\n\nТы перешёл по приглашению!\nДобавь меня в свою группу и начинай ловить жуков: /bugs")
             return
     if chat.type == 'private':
-        text = (f"Привет! Я <b>Жук-Бот</b> — бот для чатов (групп)\n\nСмысл бота: бот работает только в чатах. Раз в {COOLDOWN_SECONDS} секунд (пока тестируем) игрок может прописать команду /bugs, где в ответ получит от бота случайного жука.\n\nЕсли у тебя есть вопросы — пиши команду: /help")
+        text = (f"Привет! Я <b>Жук-Бот</b> — бот для чатов (групп)\n\nСмысл бота: бот работает только в чатах. Раз в {COOLDOWN_HOURS} часов игрок может прописать команду /bugs, где в ответ получит от бота случайного жука.\n\nЕсли у тебя есть вопросы — пиши команду: /help")
         keyboard = [[InlineKeyboardButton("➕ Добавить в группу", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -287,9 +283,12 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_time_str = user_row.iloc[0]['last_command_time']
         if pd.notna(last_time_str):
             last_time = datetime.fromisoformat(last_time_str)
-            if datetime.now() - last_time < timedelta(seconds=COOLDOWN_SECONDS):
-                remaining = timedelta(seconds=COOLDOWN_SECONDS) - (datetime.now() - last_time)
-                await update.message.reply_text(f"⏳ Подожди еще {remaining.seconds} сек.!")
+            # ИЗМЕНЕНО: Проверка кулдауна в часах
+            if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
+                remaining = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last_time)
+                hours, remainder = divmod(remaining.seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                await update.message.reply_text(f"⏳ Кулдаун! Следующий жук через {hours} ч. {minutes} мин.")
                 return
     bug_list = get_bug_list()
     if not bug_list:
@@ -456,7 +455,8 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_df = load_users()
     if users_df.empty: return
     unique_chats = users_df['chat_id'].dropna().unique()
-    past_time = (datetime.now() - timedelta(seconds=COOLDOWN_SECONDS + 5)).isoformat()
+    # ИЗМЕНЕНО: Сброс в часах
+    past_time = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
     users_df['last_command_time'] = past_time
     save_users(users_df)
     status_msg = await update.message.reply_text(f"🚀 Рассылка в {len(unique_chats)} чатов...")
