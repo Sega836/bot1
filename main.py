@@ -126,7 +126,6 @@ def log_event(user_id, chat_id, action, bug_name=""):
 
 def add_bug_to_user(user_id, username, chat_id, bug_name):
     users = load_users()
-    # Принудительно приводим ID к int, чтобы избежать проблем с float
     user_id, chat_id = int(user_id), int(chat_id)
     
     user_row = users[(users['user_id'] == user_id) & (users['chat_id'] == chat_id)]
@@ -153,7 +152,7 @@ def reset_cooldown_in_chat(chat_id):
         users.at[idx, 'last_command_time'] = past_time
     save_users(users)
 
-# --- 1. СТАРТ И РЕФЕРАЛЬНАЯ СИСТЕМА ---
+# --- Логика игры ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -164,7 +163,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError: referrer_id = None
         
         if referrer_id and referrer_id != user.id:
-            # Ищем последнюю группу пригласившего
             users_df = load_users()
             ref_groups = users_df[users_df['user_id'] == referrer_id]
             
@@ -172,15 +170,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ref_groups = ref_groups.sort_values(by='last_command_time', ascending=False)
                 target_chat_id = int(ref_groups.iloc[0]['chat_id'])
                 
-                # Начисляем 3 жука
                 bug_list = get_bug_list()
                 if bug_list:
                     for _ in range(3):
                         add_bug_to_user(referrer_id, "referrer", target_chat_id, random.choice(bug_list))
                 
                 reset_cooldown_in_chat(target_chat_id)
-                
-                # Записываем в аналитику
                 log_event(referrer_id, target_chat_id, "ref_success", "3 bugs")
                 
                 ref_username = ref_groups.iloc[0]['username']
@@ -213,7 +208,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"👋 Привет, {user.first_name}! Я готов к работе.\nНапиши /bugs, чтобы начать ловить жуков!")
 
-# --- Логика игры ---
 async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -339,49 +333,60 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /ex — Аналитика\n"
             "• /an (ответом) — Рассылка\n"
             "• /do — Скачать базы\n"
-            "• /deluser (ответом) — Удалить юзера из БД группы"
+            "• /deluser (ответом) — Удалить юзера из БД группы\n"
+            "• /del — <b>ПОЛНОСТЬЮ ОЧИСТИТЬ ВСЕ БАЗЫ</b>"
         )
         keyboard = [[InlineKeyboardButton("📊 Открыть аналитику", callback_data="admin_ex")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-# --- 2. КОМАНДА /deluser ---
-async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
+# --- АДМИНСКИЕ КОМАНДЫ ---
+async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
     
-    if user.id != ADMIN_ID: return
-    
-    if update.message.reply_to_message:
-        target_user = update.message.reply_to_message.from_user
-        target_id = int(target_user.id)
-    else:
-        await update.message.reply_text("⚠️ Чтобы удалить пользователя, ответьте (Reply) на его сообщение командой `/deluser`.", parse_mode=ParseMode.MARKDOWN)
-        return
-        
-    if chat.type not in ['group', 'supergroup']:
-        await update.message.reply_text("Удалять можно только из групп.")
-        return
-
-    chat_id = int(chat.id)
-    users = load_users()
-    user_row = users[(users['user_id'] == target_id) & (users['chat_id'] == chat_id)]
-    
-    if user_row.empty:
-        await update.message.reply_text(f"❌ Пользователь {target_user.first_name} не найден в базе этой группы.")
-        return
-        
-    users = users.drop(user_row.index)
-    save_users(users)
-    
+    # Отправляем сообщение с кнопкой подтверждения
+    keyboard = [
+        [InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ ВСЁ", callback_data="confirm_delete")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]
+    ]
     await update.message.reply_text(
-        f"✅ <b>Пользователь {target_user.first_name} (ID: {target_id}) успешно удален из базы этой группы.</b>\n\n"
-        f"Теперь вы можете снова протестировать реферальную ссылку с его аккаунта!",
+        "⚠️ <b>ВНИМАНИЕ!</b>\n\n"
+        "Вы собираетесь <b>полностью удалить</b> все базы данных:\n"
+        "• Коллекции всех игроков (Users.csv)\n"
+        "• Историю рефералов (Sulki.csv)\n"
+        "• Всю аналитику (ex.csv)\n\n"
+        "Это действие <b>невозможно отменить</b>. Вы уверены?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.HTML
     )
 
-# --- АДМИНСКИЕ КОМАНДЫ ---
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if update.effective_user.id != ADMIN_ID: return
+    
+    if query.data == "cancel_delete":
+        await query.edit_message_text("✅ Удаление отменено. Базы данных в безопасности.")
+        return
+        
+    if query.data == "confirm_delete":
+        await query.edit_message_text("⏳ Удаляю базы данных...")
+        
+        try:
+            # Перезаписываем файлы пустыми данными
+            pd.DataFrame(columns=["user_id", "username", "chat_id", "collection_json", "last_command_time"]).to_csv(USERS_FILE, index=False)
+            pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE, index=False)
+            pd.DataFrame(columns=["timestamp", "user_id", "chat_id", "action", "bug_name"]).to_csv(EX_FILE, index=False)
+            
+            # Опционально: можно удалить и файл bugs_list.json, но он перезапишется при следующем запуске
+            # os.remove(BUGS_LIST_FILE) 
+            
+            await query.edit_message_text("✅ <b>Все базы данных успешно очищены!</b>\n\nТеперь бот как новый.", parse_mode=ParseMode.HTML)
+        except Exception as e:
+            await query.edit_message_text(f"❌ Ошибка при удалении: {e}")
+
 async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     if not update.message.reply_to_message:
@@ -422,20 +427,44 @@ async def do_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.5)
             except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}")
 
+async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    if user.id != ADMIN_ID: return
+    if update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user
+        target_id = int(target_user.id)
+    else:
+        await update.message.reply_text("⚠️ Чтобы удалить пользователя, ответьте (Reply) на его сообщение командой `/deluser`.", parse_mode=ParseMode.MARKDOWN)
+        return
+        
+    if chat.type not in ['group', 'supergroup']: return
+    chat_id = int(chat.id)
+    
+    users = load_users()
+    user_row = users[(users['user_id'] == target_id) & (users['chat_id'] == chat_id)]
+    
+    if user_row.empty:
+        await update.message.reply_text(f"❌ Пользователь {target_user.first_name} не найден в базе этой группы.")
+        return
+        
+    users = users.drop(user_row.index)
+    save_users(users)
+    
+    await update.message.reply_text(f"✅ <b>Пользователь {target_user.first_name} (ID: {target_id}) удален.</b>", parse_mode=ParseMode.HTML)
+
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     ex_df = pd.read_csv(EX_FILE)
     users_df = load_users()
     
-    # Считаем реферальные успехи
-    ref_success = len(ex_df[ex_df['action'] == 'ref_success'])
-    
+    ref_success = len(ex_df[ex_df['action'] == 'ref_success']) if not ex_df.empty else 0
     text = (
         f"📊 <b>Аналитика бота</b>\n\n"
-        f"🔹 Всего нажатий /bugs: {len(ex_df[ex_df['action'] == 'bugs_command'])}\n"
+        f"🔹 Всего нажатий /bugs: {len(ex_df[ex_df['action'] == 'bugs_command']) if not ex_df.empty else 0}\n"
         f"🔹 Успешных рефералов: {ref_success}\n"
-        f"🔹 Уникальных пользователей: {ex_df[ex_df['action'] == 'bugs_command']['user_id'].nunique()}\n"
-        f"🔹 Уникальных групп: {ex_df[ex_df['action'] == 'bugs_command']['chat_id'].nunique()}\n"
+        f"🔹 Уникальных пользователей: {ex_df[ex_df['action'] == 'bugs_command']['user_id'].nunique() if not ex_df.empty else 0}\n"
         f"🔹 Всего записей в Users: {len(users_df)}\n"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
@@ -475,9 +504,14 @@ def main():
     app.add_handler(CommandHandler("an", an_command))
     app.add_handler(CommandHandler("do", do_command))
     app.add_handler(CommandHandler("deluser", deluser_command))
+    app.add_handler(CommandHandler("del", del_command)) # Новая команда
     
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
-    app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Обработчик кнопок (добавлен отлов confirm_delete и cancel_delete)
+    from telegram.ext import CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(confirm_delete|cancel_delete)$"))
+    app.add_handler(CallbackQueryHandler(button_callback)) # Для остальных кнопок
     
     print("✅ Бот успешно запущен!\n")
     app.run_polling()
