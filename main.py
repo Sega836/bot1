@@ -36,7 +36,6 @@ BUGS_LIST_FILE = os.path.join(DATA_DIR, "bugs_list.json")
 ANALYTICS_FILE = os.path.join(DATA_DIR, "analytics.csv")
 MAPPING_FILE = os.path.join(DATA_DIR, "mapping.json")
 
-# ИЗМЕНЕНО: Кулдаун теперь 12 часов
 COOLDOWN_HOURS = 12
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -68,7 +67,6 @@ def download_and_extract_bugs():
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
         
-        # Очищаем старую папку
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
@@ -77,7 +75,6 @@ def download_and_extract_bugs():
         bugs_list = []
 
         with zipfile.ZipFile(io.BytesIO(file_resp.content)) as z:
-            # Ищем nomera.txt
             nomera_filename = None
             for name in z.namelist():
                 if name.lower().endswith("nomera.txt"):
@@ -88,7 +85,6 @@ def download_and_extract_bugs():
                 print(f"📄 [ЛОГ] Найден файл с названиями: {nomera_filename}")
                 raw_bytes = z.read(nomera_filename)
                 
-                # Читаем с разными кодировками
                 content = ""
                 for encoding in ['utf-8', 'cp1251', 'cp866']:
                     try:
@@ -112,7 +108,6 @@ def download_and_extract_bugs():
             else:
                 print("⚠️ [ЛОГ] nomera.txt не найден внутри архива.")
 
-            # Сохраняем картинки строго в корень папки LOCAL_IMAGE_DIR
             for info in z.infolist():
                 if info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
                     filename = os.path.basename(info.filename).lower()
@@ -122,7 +117,6 @@ def download_and_extract_bugs():
                     with open(target_path, "wb") as target:
                         target.write(source.read())
 
-        # Сохраняем маппинг (Название -> Имя файла)
         final_mapping = {}
         for file in os.listdir(LOCAL_IMAGE_DIR):
             if file.lower().endswith(('.png', '.jpg', '.jpeg', '.webp')):
@@ -142,7 +136,6 @@ def download_and_extract_bugs():
             json.dump(bugs_list, f, ensure_ascii=False)
             
         print(f"🎉 [ЛОГ] Найдено жуков: {len(bugs_list)}")
-        print(f"🐞 Примеры названий: {bugs_list[:5]}")
         return True
         
     except Exception as e:
@@ -157,23 +150,12 @@ def get_bug_list():
 def get_bug_image_path(bug_name):
     if not os.path.exists(MAPPING_FILE):
         return None
-        
     with open(MAPPING_FILE, "r", encoding="utf-8") as f:
         mapping = json.load(f)
-        
     filename = mapping.get(bug_name)
-    if not filename:
-        return None
-        
+    if not filename: return None
     test_path = os.path.join(LOCAL_IMAGE_DIR, filename)
-    if os.path.exists(test_path):
-        return test_path
-        
-    file_base = os.path.splitext(filename)[0]
-    for f in os.listdir(LOCAL_IMAGE_DIR):
-        if os.path.splitext(f)[0] == file_base:
-            return os.path.join(LOCAL_IMAGE_DIR, f)
-            
+    if os.path.exists(test_path): return test_path
     return None
 
 # --- Работа с CSV ---
@@ -231,7 +213,6 @@ def reset_cooldown_in_chat(chat_id):
     users = load_users()
     group_users = users[users['chat_id'] == chat_id]
     if group_users.empty: return
-    # ИЗМЕНЕНО: Сброс с учетом часов
     past_time = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
     for idx in group_users.index:
         users.at[idx, 'last_command_time'] = past_time
@@ -283,7 +264,6 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_time_str = user_row.iloc[0]['last_command_time']
         if pd.notna(last_time_str):
             last_time = datetime.fromisoformat(last_time_str)
-            # ИЗМЕНЕНО: Проверка кулдауна в часах
             if datetime.now() - last_time < timedelta(hours=COOLDOWN_HOURS):
                 remaining = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last_time)
                 hours, remainder = divmod(remaining.seconds, 3600)
@@ -340,7 +320,6 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for bug, count in sorted(collection.items(), key=lambda x: x[1], reverse=True)[:10]:
         text += f"• {bug} — {count} шт.\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ['group', 'supergroup']: return
@@ -365,19 +344,151 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    text = ("👑 <b>Команды администратора</b>\n\n📊 <b>Статистика:</b>\n• /stats — Текстовая статистика\n• /ex — Графики за 7 дней\n• /exall — Графики за всё время\n\n🛠 <b>Управление:</b>\n• /an (ответом) — Рассылка\n• /do — Скачать базы данных\n• /deluser (ответом) — Удалить юзера из группы\n• /del — ОЧИСТИТЬ ВСЕ БАЗЫ\n• /fixbugs — Перекачать жуков")
+    text = ("👑 <b>Команды администратора</b>\n\n"
+            "📊 <b>Статистика:</b>\n"
+            "• /stats — Текстовая статистика\n"
+            "• /ex — Графики за 7 дней\n"
+            "• /exall — Графики за всё время\n"
+            "• /groups — Список групп из базы\n"
+            "• /groupstats — <b>Скачать TXT с реальными участниками</b>\n"
+            "• /globaltop — Глобальный топ игроков\n\n"
+            "🛠 <b>Управление:</b>\n"
+            "• /an (ответом) — Рассылка\n"
+            "• /do — Скачать базы данных\n"
+            "• /deluser (ответом) — Удалить юзера из группы\n"
+            "• /del — ОЧИСТИТЬ ВСЕ БАЗЫ\n"
+            "• /fixbugs — Перекачать жуков")
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    users_df = load_users()
+    if users_df.empty:
+        await update.message.reply_text("Пока нет данных о группах.")
+        return
+        
+    groups = users_df.groupby('chat_id')
+    text = "📋 <b>Список групп из базы (по активности):</b>\n\n"
+    
+    group_stats = []
+    for chat_id, group_data in groups:
+        players = len(group_data)
+        total_bugs = 0
+        for _, row in group_data.iterrows():
+            try: total_bugs += sum(json.loads(row['collection_json']).values())
+            except: pass
+        group_stats.append((chat_id, players, total_bugs))
+        
+    group_stats.sort(key=lambda x: x[2], reverse=True)
+    
+    for i, (chat_id, players, total_bugs) in enumerate(group_stats[:30], 1):
+        text += f"{i}. Группа <code>{chat_id}</code> — 👥 {players} игроков, 🐞 {total_bugs} жуков\n"
+        
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# --- НОВАЯ КОМАНДА: СБОР РЕАЛЬНЫХ УЧАСТНИКОВ В TXT ---
+async def groupstats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    msg = await update.message.reply_text("⏳ Собираю данные о группах... Это может занять время.")
+    
+    users_df = load_users()
+    if users_df.empty:
+        await msg.edit_text("❌ База данных пуста.")
+        return
+        
+    unique_chats = users_df['chat_id'].dropna().unique()
+    
+    result_text = "СПИСОК ГРУПП И ИХ УЧАСТНИКОВ (реальные данные)\n"
+    result_text += "="*50 + "\n\n"
+    
+    success = 0
+    errors = 0
+    
+    for chat_id in unique_chats:
+        try:
+            # Запрашиваем информацию о чате
+            chat_info = await context.bot.get_chat(chat_id=int(chat_id))
+            title = chat_info.title or "Без названия"
+            
+            # Пытаемся получить количество участников (для супергрупп работает get_member_count)
+            try:
+                member_count = await context.bot.get_chat_member_count(chat_id=int(chat_id))
+            except:
+                member_count = "Неизвестно (не супергруппа)"
+                
+            result_text += f"Название: {title}\n"
+            result_text += f"ID: {chat_id}\n"
+            result_text += f"Участников: {member_count}\n"
+            result_text += "-" * 30 + "\n"
+            success += 1
+            
+            # Задержка, чтобы не забанил Telegram API
+            await asyncio.sleep(0.1)
+            
+        except Exception as e:
+            # Если бота удалили из чата или он заблокирован
+            result_text += f"ID: {chat_id} - ОШИБКА ДОСТУПА (бот удален или нет прав)\n"
+            result_text += "-" * 30 + "\n"
+            errors += 1
+            
+    # Сохраняем в файл
+    file_path = os.path.join(DATA_DIR, "groups_info.txt")
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(result_text)
+        
+    await msg.edit_text(
+        f"✅ Готово!\nУспешно получено: {success}\nОшибок (бот удален): {errors}\n\nОтправляю файл..."
+    )
+    
+    with open(file_path, "rb") as f:
+        await update.message.reply_document(document=f, filename="groups_info.txt")
+
+async def globaltop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    users_df = load_users()
+    if users_df.empty: return
+    
+    leaderboard = {}
+    for _, row in users_df.iterrows():
+        user_id = row['user_id']
+        username = row['username']
+        try:
+            bugs = sum(json.loads(row['collection_json']).values())
+            if user_id not in leaderboard:
+                leaderboard[user_id] = {"username": username, "total": 0}
+            leaderboard[user_id]["total"] += bugs
+        except: pass
+        
+    sorted_top = sorted(leaderboard.values(), key=lambda x: x["total"], reverse=True)
+    
+    text = "🌍 <b>Глобальный топ игроков (по всему боту):</b>\n\n"
+    for i, data in enumerate(sorted_top[:20], 1):
+        medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else f"{i}."
+        text += f"{medal} @{data['username']} — {data['total']} жуков\n"
+        
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     users_df = load_users()
     analytics_df = pd.read_csv(ANALYTICS_FILE)
+    
     total_users = len(users_df)
+    unique_chats = users_df['chat_id'].nunique() if not users_df.empty else 0
     total_bugs = analytics_df['bugs_clicked'].sum() if not analytics_df.empty else 0
+    
     last_7_days = analytics_df.tail(7)
     bugs_7d = last_7_days['bugs_clicked'].sum() if not last_7_days.empty else 0
     users_7d = last_7_days['new_users'].sum() if not last_7_days.empty else 0
-    text = (f"📈 <b>Статистика бота</b>\n\n👥 Всего игроков в боте: <b>{total_users}</b>\n🐞 Всего нажатий /bugs: <b>{total_bugs}</b>\n\n<b>За последние 7 дней:</b>\n🐞 Нажатий /bugs: <b>{bugs_7d}</b>\n🆕 Пришло новых игроков: <b>{users_7d}</b>")
+    
+    text = (f"📈 <b>Статистика бота</b>\n\n"
+            f"👥 Всего записей игроков: <b>{total_users}</b>\n"
+            f"💬 Всего активных групп: <b>{unique_chats}</b>\n"
+            f"🐞 Всего нажатий /bugs: <b>{total_bugs}</b>\n\n"
+            f"<b>За последние 7 дней:</b>\n"
+            f"🐞 Нажатий /bugs: <b>{bugs_7d}</b>\n"
+            f"🆕 Пришло новых игроков: <b>{users_7d}</b>")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line", chart_type_users="bar"):
@@ -455,7 +566,6 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users_df = load_users()
     if users_df.empty: return
     unique_chats = users_df['chat_id'].dropna().unique()
-    # ИЗМЕНЕНО: Сброс в часах
     past_time = (datetime.now() - timedelta(hours=COOLDOWN_HOURS + 1)).isoformat()
     users_df['last_command_time'] = past_time
     save_users(users_df)
@@ -540,6 +650,9 @@ def main():
     app.add_handler(CommandHandler("stats", stats_command))
     app.add_handler(CommandHandler("ex", ex_command))
     app.add_handler(CommandHandler("exall", exall_command))
+    app.add_handler(CommandHandler("groups", groups_command))
+    app.add_handler(CommandHandler("groupstats", groupstats_command))
+    app.add_handler(CommandHandler("globaltop", globaltop_command))
     app.add_handler(CommandHandler("an", an_command))
     app.add_handler(CommandHandler("do", do_command))
     app.add_handler(CommandHandler("deluser", deluser_command))
