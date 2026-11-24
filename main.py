@@ -26,7 +26,7 @@ except PermissionError:
     DATA_DIR = "data"
     os.makedirs(DATA_DIR, exist_ok=True)
 
-BUGS_ARCHIVE_PATH = "Bugs.zip" 
+BUGS_ARCHIVE_PATH = "Bugs.zip"
 LOCAL_IMAGE_DIR = os.path.join(DATA_DIR, "bug_images")
 
 USERS_FILE = os.path.join(DATA_DIR, "Users.csv")
@@ -41,32 +41,34 @@ COOLDOWN_HOURS = 12
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 # --- Работа с Яндекс.Диском и картинками ---
 def download_and_extract_bugs():
-    print("\n" + "="*40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "="*40)
+    print("\n" + "=" * 40 + "\n🚀 [ЛОГ] ЗАГРУЗКА ЖУКОВ\n" + "=" * 40)
     os.makedirs(LOCAL_IMAGE_DIR, exist_ok=True)
-    
+
     meta_url = "https://cloud-api.yandex.net/v1/disk/resources"
     headers = {"Authorization": f"OAuth {YANDEX_TOKEN}"}
     params = {"path": BUGS_ARCHIVE_PATH}
-    
+
     try:
         resp = requests.get(meta_url, headers=headers, params=params)
-        if resp.status_code != 200: 
+        if resp.status_code != 200:
             print(f"❌ [ЛОГ] Не удалось найти {BUGS_ARCHIVE_PATH} на Диске.")
             return False
-            
+
         meta = resp.json()
         download_href = meta.get("file")
         if not download_href:
-            dl_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/download", headers=headers, params=params)
+            dl_resp = requests.get("https://cloud-api.yandex.net/v1/disk/resources/download", headers=headers,
+                                   params=params)
             download_href = dl_resp.json().get("href")
 
         if not download_href: return False
-        
+
         file_resp = requests.get(download_href)
         file_resp.raise_for_status()
-        
+
         for root, dirs, files in os.walk(LOCAL_IMAGE_DIR, topdown=False):
             for name in files: os.remove(os.path.join(root, name))
             for name in dirs: os.rmdir(os.path.join(root, name))
@@ -80,7 +82,7 @@ def download_and_extract_bugs():
                 if name.lower().endswith("nomera.txt"):
                     nomera_filename = name
                     break
-            
+
             if nomera_filename:
                 raw_bytes = z.read(nomera_filename)
                 content = ""
@@ -88,8 +90,9 @@ def download_and_extract_bugs():
                     try:
                         content = raw_bytes.decode(encoding)
                         break
-                    except UnicodeDecodeError: continue
-                
+                    except UnicodeDecodeError:
+                        continue
+
                 for line in content.splitlines():
                     match = re.match(r'^(\d+)\s*[,\-:]?\s*(.*)$', line.strip())
                     if match:
@@ -112,52 +115,71 @@ def download_and_extract_bugs():
                 file_id = os.path.splitext(file)[0]
                 display_name = mapping.get(file_id, file_id)
                 final_mapping[display_name] = file
-        
+
         if not bugs_list: bugs_list = list(final_mapping.keys())
         bugs_list = list(set(bugs_list))
 
-        with open(MAPPING_FILE, "w", encoding="utf-8") as f: json.dump(final_mapping, f, ensure_ascii=False)
-        with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f: json.dump(bugs_list, f, ensure_ascii=False)
+        with open(MAPPING_FILE, "w", encoding="utf-8") as f:
+            json.dump(final_mapping, f, ensure_ascii=False)
+        with open(BUGS_LIST_FILE, "w", encoding="utf-8") as f:
+            json.dump(bugs_list, f, ensure_ascii=False)
         return True
     except Exception as e:
         print(f"❌ [ЛОГ] Ошибка: {e}")
         return False
+
 
 def get_bug_list():
     if os.path.exists(BUGS_LIST_FILE):
         with open(BUGS_LIST_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return []
 
+
 def get_bug_image_path(bug_name):
     if not os.path.exists(MAPPING_FILE): return None
-    with open(MAPPING_FILE, "r", encoding="utf-8") as f: mapping = json.load(f)
+    with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+        mapping = json.load(f)
     filename = mapping.get(bug_name)
     if not filename: return None
     test_path = os.path.join(LOCAL_IMAGE_DIR, filename)
     if os.path.exists(test_path): return test_path
     return None
 
+
 # --- Работа с CSV ---
 def init_csv_files():
     if not os.path.exists(USERS_FILE):
-        pd.DataFrame(columns=["user_id", "username", "chat_id", "collection_json", "last_command_time", "reg_date"]).to_csv(USERS_FILE, index=False)
+        pd.DataFrame(
+            columns=["user_id", "username", "chat_id", "collection_json", "last_command_time", "reg_date"]).to_csv(
+            USERS_FILE, index=False)
     if not os.path.exists(SULKI_FILE):
-        pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE, index=False)
+        pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE,
+                                                                                                         index=False)
     if not os.path.exists(EX_FILE):
         pd.DataFrame(columns=["timestamp", "user_id", "chat_id", "action", "bug_name"]).to_csv(EX_FILE, index=False)
     if not os.path.exists(ANALYTICS_FILE):
         pd.DataFrame(columns=["date", "bugs_clicked", "new_users"]).to_csv(ANALYTICS_FILE, index=False)
 
+
 def load_users(): return pd.read_csv(USERS_FILE)
+
+
 def save_users(df): df.to_csv(USERS_FILE, index=False)
+
+
 def load_sulki(): return pd.read_csv(SULKI_FILE)
+
+
 def save_sulki(df): df.to_csv(SULKI_FILE, index=False)
+
 
 def log_event(user_id, chat_id, action, bug_name=""):
     df = pd.read_csv(EX_FILE)
-    new_row = {"timestamp": datetime.now().isoformat(), "user_id": user_id, "chat_id": chat_id, "action": action, "bug_name": bug_name}
+    new_row = {"timestamp": datetime.now().isoformat(), "user_id": user_id, "chat_id": chat_id, "action": action,
+               "bug_name": bug_name}
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     df.to_csv(EX_FILE, index=False)
+
 
 def update_daily_analytics(action_type):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -166,9 +188,12 @@ def update_daily_analytics(action_type):
         new_row = {"date": today, "bugs_clicked": 0, "new_users": 0}
         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     idx = df[df['date'] == today].index[0]
-    if action_type == "bugs": df.at[idx, 'bugs_clicked'] += 1
-    elif action_type == "new_user": df.at[idx, 'new_users'] += 1
+    if action_type == "bugs":
+        df.at[idx, 'bugs_clicked'] += 1
+    elif action_type == "new_user":
+        df.at[idx, 'new_users'] += 1
     df.to_csv(ANALYTICS_FILE, index=False)
+
 
 def add_bug_to_user(user_id, username, chat_id, bug_name):
     users = load_users()
@@ -176,7 +201,9 @@ def add_bug_to_user(user_id, username, chat_id, bug_name):
     user_row = users[(users['user_id'] == user_id) & (users['chat_id'] == chat_id)]
     if user_row.empty:
         collection = {bug_name: 1}
-        new_row = {"user_id": user_id, "username": username, "chat_id": chat_id, "collection_json": json.dumps(collection, ensure_ascii=False), "last_command_time": datetime.now().isoformat(), "reg_date": datetime.now().strftime("%Y-%m-%d")}
+        new_row = {"user_id": user_id, "username": username, "chat_id": chat_id,
+                   "collection_json": json.dumps(collection, ensure_ascii=False),
+                   "last_command_time": datetime.now().isoformat(), "reg_date": datetime.now().strftime("%Y-%m-%d")}
         users = pd.concat([users, pd.DataFrame([new_row])], ignore_index=True)
         update_daily_analytics("new_user")
     else:
@@ -186,6 +213,7 @@ def add_bug_to_user(user_id, username, chat_id, bug_name):
         users.at[idx, 'collection_json'] = json.dumps(current_collection, ensure_ascii=False)
         users.at[idx, 'last_command_time'] = datetime.now().isoformat()
     save_users(users)
+
 
 def reset_cooldown_in_chat(chat_id):
     chat_id = int(chat_id)
@@ -197,14 +225,17 @@ def reset_cooldown_in_chat(chat_id):
         users.at[idx, 'last_command_time'] = past_time
     save_users(users)
 
+
 # --- Логика игры ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     if context.args and chat.type == 'private':
         referrer_id = context.args[0]
-        try: referrer_id = int(referrer_id)
-        except: referrer_id = None
+        try:
+            referrer_id = int(referrer_id)
+        except:
+            referrer_id = None
         if referrer_id and referrer_id != user.id:
             users_df = load_users()
             ref_groups = users_df[users_df['user_id'] == referrer_id]
@@ -217,17 +248,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reset_cooldown_in_chat(target_chat_id)
                 log_event(referrer_id, target_chat_id, "ref_success", "3 bugs")
                 ref_username = ref_groups.iloc[0]['username']
-                msg = (f"🎁 <b>Реферальная программа!</b>\n\nПользователь {user.mention_html()} перешел по ссылке.\nПригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b>!\n⚡ У <b>всей группы</b> сброшен кулдаун!")
-                try: await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
-                except: pass
-            await update.message.reply_text(f"👋 Привет, {user.first_name}!\n\nТы перешёл по приглашению!\nДобавь меня в свою группу и начинай ловить жуков: /bugs")
+                msg = (
+                    f"🎁 <b>Реферальная программа!</b>\n\nПользователь {user.mention_html()} перешел по ссылке.\nПригласивший <a href='tg://user?id={referrer_id}'>{ref_username}</a> получает <b>3 бонусных жука</b>!\n⚡ У <b>всей группы</b> сброшен кулдаун!")
+                try:
+                    await context.bot.send_message(chat_id=target_chat_id, text=msg, parse_mode=ParseMode.HTML)
+                except:
+                    pass
+            await update.message.reply_text(
+                f"👋 Привет, {user.first_name}!\n\nТы перешёл по приглашению!\nДобавь меня в свою группу и начинай ловить жуков: /bugs")
             return
     if chat.type == 'private':
-        text = (f"Привет! Я <b>Жук-Бот</b> — бот для чатов.\nСмысл бота: раз в {COOLDOWN_HOURS} часов игрок может прописать /bugs и получить случайного жука.\n\nВопросы: /help")
-        keyboard = [[InlineKeyboardButton("➕ Добавить в группу", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
+        text = (
+            f"Привет! Я <b>Жук-Бот</b> — бот для чатов.\nСмысл бота: раз в {COOLDOWN_HOURS} часов игрок может прописать /bugs и получить случайного жука.\n\nВопросы: /help")
+        keyboard = [
+            [InlineKeyboardButton("➕ Добавить в группу", url=f"https://t.me/{context.bot.username}?startgroup=true")]]
         await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await update.message.reply_text(f"👋 Привет, {user.first_name}! Напиши /bugs!")
+
 
 async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -246,7 +284,7 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 remaining = timedelta(hours=COOLDOWN_HOURS) - (datetime.now() - last_time)
                 hours, remainder = divmod(remaining.seconds, 3600)
                 minutes = divmod(remainder, 60)[0]
-                await update.message.reply_text(f"⏳ Кулдаун! Следующий жук через {hours} ч. {minutes} мин.")
+                await update.message.reply_text(f"⏳ Кулдаун! Следующий жук через {hours} ч. {minutes} мин.\n\nЕсли хочешь убрать кулдаун пиши /ref")
                 return
     bug_list = get_bug_list()
     if not bug_list:
@@ -262,22 +300,27 @@ async def bugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with open(image_path, 'rb') as photo:
                 await update.message.reply_photo(photo=photo, caption=caption, parse_mode=ParseMode.HTML)
-        except Exception as e: 
+        except Exception as e:
             await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
     else:
         await update.message.reply_text(caption, parse_mode=ParseMode.HTML)
+
 
 async def new_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ['group', 'supergroup']: return
     await update.message.reply_text("👋 Привет! Я готов к работе. Напиши /bugs, чтобы начать ловить жуков!")
 
+
 async def ref_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ref_link = f"https://t.me/{context.bot.username}?start={user.id}"
-    text = (f"🎁 <b>Твоя реферальная ссылка:</b>\n\n<code>{ref_link}</code>\n\nОтправь её другу. Как только он перейдет по ней и запустит бота, ты <b>сразу получишь 3 бонусных жука</b>!")
-    keyboard = [[InlineKeyboardButton("📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={ref_link}&text=Присоединяйся к охоте на жуков!")]]
+    text = (
+        f"🎁 <b>Твоя реферальная ссылка:</b>\n\n<code>{ref_link}</code>\n\nОтправь её другу. Как только он перейдет по ней и запустит бота, ты <b>сразу получишь 3 бонусных жука</b>!")
+    keyboard = [[InlineKeyboardButton("📤 Поделиться ссылкой",
+                                      url=f"https://t.me/share/url?url={ref_link}&text=Присоединяйся к охоте на жуков!")]]
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -296,6 +339,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {bug} — {count} шт.\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+
 async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     if chat.type not in ['group', 'supergroup']: return
@@ -305,8 +349,10 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if group_users.empty: return
     leaderboard = []
     for _, row in group_users.iterrows():
-        try: leaderboard.append((row['username'], sum(json.loads(row['collection_json']).values())))
-        except: pass
+        try:
+            leaderboard.append((row['username'], sum(json.loads(row['collection_json']).values())))
+        except:
+            pass
     leaderboard.sort(key=lambda x: x[1], reverse=True)
     text = "🏆 <b>Топ охотников за жуками:</b>\n\n"
     for i, (username, total) in enumerate(leaderboard[:10], 1):
@@ -314,9 +360,12 @@ async def top_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{medal} @{username} — {total} жуков\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = ("🐞 <b>Охота на жуков — Справка</b>\n\n📜 <b>Доступные команды:</b>\n• /bugs — Поймать жука\n• /ref — Реферальная ссылка\n• /profile — Моя коллекция\n• /top — Топ игроков\n• /help — Помощь")
+    text = (
+        "🐞 <b>Охота на жуков — Справка</b>\n\n📜 <b>Доступные команды:</b>\n• /bugs — Поймать жука\n• /ref — Реферальная ссылка\n• /profile — Моя коллекция\n• /top — Топ игроков\n• /help — Помощь")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
 
 async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -336,24 +385,25 @@ async def adminhelp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• /fixbugs — Перекачать жуков")
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
+
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     msg = await update.message.reply_text("⏳ Собираю подробную статистику (запрашиваю данные у Telegram)...")
-    
+
     users_df = load_users()
     analytics_df = pd.read_csv(ANALYTICS_FILE)
     sulki_df = load_sulki()
-    
+
     total_records = len(users_df)
     unique_chats = users_df['chat_id'].dropna().unique()
     unique_players = users_df['user_id'].nunique()
     total_bugs = analytics_df['bugs_clicked'].sum() if not analytics_df.empty else 0
     total_refs = len(sulki_df[sulki_df['invited_user_id'].notna()]) if not sulki_df.empty else 0
-    
+
     total_people_in_groups = 0
     active_groups = 0
     dead_groups = 0
-    
+
     for chat_id in unique_chats:
         try:
             count = await context.bot.get_chat_member_count(chat_id=int(chat_id))
@@ -364,7 +414,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dead_groups += 1
 
     conversion = (unique_players / total_people_in_groups * 100) if total_people_in_groups > 0 else 0
-    
+
     last_7_days = analytics_df.tail(7)
     bugs_7d = last_7_days['bugs_clicked'].sum() if not last_7_days.empty else 0
     users_7d = last_7_days['new_users'].sum() if not last_7_days.empty else 0
@@ -387,38 +437,41 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await msg.edit_text(text, parse_mode=ParseMode.HTML)
 
+
 async def fullreport_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     msg = await update.message.reply_text("📦 Генерирую полный отчет... Пожалуйста, подождите.")
-    
+
     users_df = load_users()
     analytics_df = pd.read_csv(ANALYTICS_FILE)
     sulki_df = load_sulki()
     ex_df = pd.read_csv(EX_FILE)
-    
-    report = "="*50 + "\n"
+
+    report = "=" * 50 + "\n"
     report += "ПОЛНЫЙ ОТЧЕТ ПО БОТУ 'ОХОТА НА ЖУКОВ'\n"
     report += f"Дата генерации: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    report += "="*50 + "\n\n"
-    
+    report += "=" * 50 + "\n\n"
+
     report += "--- 1. ОБЩАЯ СВОДКА ---\n"
     report += f"Всего записей игроков: {len(users_df)}\n"
     report += f"Уникальных ID игроков: {users_df['user_id'].nunique()}\n"
     report += f"Всего нажатий /bugs: {len(ex_df[ex_df['action'] == 'bugs_command'])}\n"
     report += f"Успешных рефералов: {len(ex_df[ex_df['action'] == 'ref_success'])}\n\n"
-    
+
     report += "--- 2. ИНФОРМАЦИЯ ПО ГРУППАМ ---\n"
     unique_chats = users_df['chat_id'].dropna().unique()
     total_people = 0
-    
+
     for chat_id in unique_chats:
         group_users = users_df[users_df['chat_id'] == chat_id]
         players_count = len(group_users)
         total_bugs_in_group = 0
         for _, row in group_users.iterrows():
-            try: total_bugs_in_group += sum(json.loads(row['collection_json']).values())
-            except: pass
-            
+            try:
+                total_bugs_in_group += sum(json.loads(row['collection_json']).values())
+            except:
+                pass
+
         try:
             chat_info = await context.bot.get_chat(chat_id=int(chat_id))
             title = chat_info.title or "Без названия"
@@ -427,16 +480,16 @@ async def fullreport_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except:
             title = "НЕТ ДОСТУПА (бот удален)"
             member_count = "?"
-            
+
         report += f"Группа: {title} (ID: {chat_id})\n"
         report += f" - Людей в чате: {member_count}\n"
         report += f" - Игроков в базе: {players_count}\n"
         report += f" - Поймано жуков: {total_bugs_in_group}\n"
         report += "-" * 30 + "\n"
         await asyncio.sleep(0.05)
-        
+
     report += f"\nИТОГО людей во всех доступных группах: {total_people}\n\n"
-    
+
     report += "--- 3. ГЛОБАЛЬНЫЙ ТОП ИГРОКОВ (ТОП-50) ---\n"
     leaderboard = {}
     for _, row in users_df.iterrows():
@@ -445,13 +498,14 @@ async def fullreport_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             bugs = sum(json.loads(row['collection_json']).values())
             if u_id not in leaderboard: leaderboard[u_id] = {"name": u_name, "total": 0}
             leaderboard[u_id]["total"] += bugs
-        except: pass
-        
+        except:
+            pass
+
     sorted_top = sorted(leaderboard.values(), key=lambda x: x["total"], reverse=True)
     for i, data in enumerate(sorted_top[:50], 1):
         report += f"{i}. @{data['name']} (ID: {data['name']}) — {data['total']} жуков\n"
     report += "\n"
-    
+
     report += "--- 4. ИСТОРИЯ ПО ДНЯМ ---\n"
     for _, row in analytics_df.iterrows():
         report += f"{row['date']}: Нажатий /bugs = {row['bugs_clicked']}, Новых юзеров = {row['new_users']}\n"
@@ -459,10 +513,12 @@ async def fullreport_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     file_path = os.path.join(DATA_DIR, "full_analytics_report.txt")
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(report)
-        
+
     await msg.edit_text("✅ Отчет готов! Отправляю файл...")
     with open(file_path, "rb") as f:
-        await update.message.reply_document(document=f, filename="Full_Analytics.txt", caption="📊 Полная выгрузка данных")
+        await update.message.reply_document(document=f, filename="Full_Analytics.txt",
+                                            caption="📊 Полная выгрузка данных")
+
 
 async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -472,12 +528,14 @@ async def groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📋 <b>Список групп из базы (без API):</b>\n\n"
     group_stats = []
     for chat_id, group_data in groups:
-        total_bugs = sum(sum(json.loads(r['collection_json']).values()) for _, r in group_data.iterrows() if pd.notna(r['collection_json']))
+        total_bugs = sum(sum(json.loads(r['collection_json']).values()) for _, r in group_data.iterrows() if
+                         pd.notna(r['collection_json']))
         group_stats.append((chat_id, len(group_data), total_bugs))
     group_stats.sort(key=lambda x: x[2], reverse=True)
     for i, (chat_id, players, total_bugs) in enumerate(group_stats[:30], 1):
         text += f"{i}. <code>{chat_id}</code> — 👥 {players} игр., 🐞 {total_bugs} жук.\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
 
 async def globaltop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -490,7 +548,8 @@ async def globaltop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bugs = sum(json.loads(row['collection_json']).values())
             if u_id not in leaderboard: leaderboard[u_id] = {"name": u_name, "total": 0}
             leaderboard[u_id]["total"] += bugs
-        except: pass
+        except:
+            pass
     sorted_top = sorted(leaderboard.values(), key=lambda x: x["total"], reverse=True)
     text = "🌍 <b>Глобальный топ игроков:</b>\n\n"
     for i, data in enumerate(sorted_top[:20], 1):
@@ -498,22 +557,35 @@ async def globaltop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"{medal} @{data['name']} — {data['total']} жуков\n"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line", chart_type_users="bar"):
-    config_bugs = {"type": chart_type_bugs, "data": {"labels": labels, "datasets": [{"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f", "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]}, "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
-    config_users = {"type": chart_type_users, "data": {"labels": labels, "datasets": [{"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]}, "options": {"title": {"display": True, "text": title_users, "fontSize": 16}, "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
+
+def generate_chart_url(labels, data_bugs, data_users, title_bugs, title_users, chart_type_bugs="line",
+                       chart_type_users="bar"):
+    config_bugs = {"type": chart_type_bugs, "data": {"labels": labels, "datasets": [
+        {"label": "Нажатий /bugs", "data": data_bugs, "borderColor": "#36a64f",
+         "backgroundColor": "rgba(54, 166, 79, 0.2)", "fill": True, "tension": 0.3}]},
+                   "options": {"title": {"display": True, "text": title_bugs, "fontSize": 16},
+                               "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
+    config_users = {"type": chart_type_users, "data": {"labels": labels, "datasets": [
+        {"label": "Новые игроки", "data": data_users, "backgroundColor": "#007bff"}]},
+                    "options": {"title": {"display": True, "text": title_users, "fontSize": 16},
+                                "scales": {"yAxes": [{"ticks": {"beginAtZero": True}}]}}}
     url_bugs = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_bugs))}&w=600&h=300&bkg=white"
     url_users = f"https://quickchart.io/chart?c={urllib.parse.quote(json.dumps(config_users))}&w=600&h=300&bkg=white"
     return url_bugs, url_users
+
 
 async def ex_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     analytics_df = pd.read_csv(ANALYTICS_FILE)
     if analytics_df.empty: return
     df_plot = analytics_df.tail(7)
-    url_bugs, url_users = generate_chart_url(df_plot['date'].tolist(), df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(), "🐞 Нажатия /bugs (7 дней)", "👤 Прирост игроков (7 дней)")
+    url_bugs, url_users = generate_chart_url(df_plot['date'].tolist(), df_plot['bugs_clicked'].tolist(),
+                                             df_plot['new_users'].tolist(), "🐞 Нажатия /bugs (7 дней)",
+                                             "👤 Прирост игроков (7 дней)")
     await update.message.reply_photo(photo=url_bugs, caption="📈 График активности")
     await asyncio.sleep(1)
     await update.message.reply_photo(photo=url_users, caption="📊 График прироста")
+
 
 async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -526,15 +598,21 @@ async def exall_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         df_plot = analytics_df
         chart_type = "line"
-    url_bugs, url_users = generate_chart_url(df_plot['date'].tolist() if 'date' in df_plot else df_plot['month'].tolist(), df_plot['bugs_clicked'].tolist(), df_plot['new_users'].tolist(), "🐞 Нажатия (всё время)", "👤 Прирост (всё время)", chart_type_bugs=chart_type)
+    url_bugs, url_users = generate_chart_url(
+        df_plot['date'].tolist() if 'date' in df_plot else df_plot['month'].tolist(), df_plot['bugs_clicked'].tolist(),
+        df_plot['new_users'].tolist(), "🐞 Нажатия (всё время)", "👤 Прирост (всё время)", chart_type_bugs=chart_type)
     await update.message.reply_photo(photo=url_bugs, caption="📈 График активности")
     await asyncio.sleep(1)
     await update.message.reply_photo(photo=url_users, caption="📊 График прироста")
 
+
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    keyboard = [[InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ ВСЁ", callback_data="confirm_delete")], [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]]
-    await update.message.reply_text("⚠️ <b>Вы уверены?</b> Это удалит всё.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+    keyboard = [[InlineKeyboardButton("🗑️ ДА, УДАЛИТЬ ВСЁ", callback_data="confirm_delete")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")]]
+    await update.message.reply_text("⚠️ <b>Вы уверены?</b> Это удалит всё.",
+                                    reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.HTML)
+
 
 async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -544,11 +622,15 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ Отменено.")
         return
     if query.data == "confirm_delete":
-        pd.DataFrame(columns=["user_id", "username", "chat_id", "collection_json", "last_command_time", "reg_date"]).to_csv(USERS_FILE, index=False)
-        pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE, index=False)
+        pd.DataFrame(
+            columns=["user_id", "username", "chat_id", "collection_json", "last_command_time", "reg_date"]).to_csv(
+            USERS_FILE, index=False)
+        pd.DataFrame(columns=["ref_link", "chat_id", "user_id", "invited_user_id", "created_at"]).to_csv(SULKI_FILE,
+                                                                                                         index=False)
         pd.DataFrame(columns=["timestamp", "user_id", "chat_id", "action", "bug_name"]).to_csv(EX_FILE, index=False)
         pd.DataFrame(columns=["date", "bugs_clicked", "new_users"]).to_csv(ANALYTICS_FILE, index=False)
         await query.edit_message_text("✅ <b>Все базы данных очищены!</b>", parse_mode=ParseMode.HTML)
+
 
 async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -571,19 +653,25 @@ async def an_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=int(chat_id), text=ad_postfix, parse_mode=ParseMode.HTML)
             success += 1
             await asyncio.sleep(0.1)
-        except: error += 1
+        except:
+            error += 1
     await status_msg.edit_text(f"✅ <b>Готово!</b> Успешно: {success}, Ошибок: {error}", parse_mode=ParseMode.HTML)
+
 
 async def do_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     await update.message.reply_text("📦 Собираю базы данных...")
-    files = [(USERS_FILE, "Users.csv"), (SULKI_FILE, "Sulki.csv"), (EX_FILE, "ex.csv"), (ANALYTICS_FILE, "analytics.csv"), (BUGS_LIST_FILE, "bugs_list.json")]
+    files = [(USERS_FILE, "Users.csv"), (SULKI_FILE, "Sulki.csv"), (EX_FILE, "ex.csv"),
+             (ANALYTICS_FILE, "analytics.csv"), (BUGS_LIST_FILE, "bugs_list.json")]
     for path, name in files:
         if os.path.exists(path):
             try:
-                with open(path, 'rb') as f: await update.message.reply_document(document=f, filename=name)
+                with open(path, 'rb') as f:
+                    await update.message.reply_document(document=f, filename=name)
                 await asyncio.sleep(0.5)
-            except Exception as e: await update.message.reply_text(f"❌ Ошибка: {e}")
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка: {e}")
+
 
 async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -606,6 +694,7 @@ async def deluser_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_users(users)
     await update.message.reply_text(f"✅ <b>Пользователь удален.</b>", parse_mode=ParseMode.HTML)
 
+
 async def fixbugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     msg = await update.message.reply_text("🔄 Перекачиваю архив...")
@@ -615,22 +704,27 @@ async def fixbugs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await msg.edit_text("❌ Ошибка при скачивании.")
 
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
+
 async def post_init(application):
-    commands = [BotCommand("bugs", "🐞 Поймать жука"), BotCommand("ref", "🔗 Моя реф. ссылка"), BotCommand("profile", "👤 Мой профиль"), BotCommand("top", "🏆 Топ игроков"), BotCommand("help", "📜 Помощь")]
+    commands = [BotCommand("bugs", "🐞 Поймать жука"), BotCommand("ref", "🔗 Моя реф. ссылка"),
+                BotCommand("profile", "👤 Мой профиль"), BotCommand("top", "🏆 Топ игроков"),
+                BotCommand("help", "📜 Помощь")]
     await application.bot.set_my_commands(commands)
+
 
 def main():
     if not BOT_TOKEN: return
-    print("\n" + "="*40 + "\n🤖 ЗАПУСК БОТА...\n" + "="*40)
+    print("\n" + "=" * 40 + "\n🤖 ЗАПУСК БОТА...\n" + "=" * 40)
     init_csv_files()
     download_and_extract_bugs()
-    
+
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("bugs", bugs_command))
     app.add_handler(CommandHandler("ref", ref_command))
@@ -649,12 +743,13 @@ def main():
     app.add_handler(CommandHandler("deluser", deluser_command))
     app.add_handler(CommandHandler("del", del_command))
     app.add_handler(CommandHandler("fixbugs", fixbugs_command))
-    
+
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_chat_member))
     app.add_handler(CallbackQueryHandler(delete_callback, pattern="^(confirm_delete|cancel_delete)$"))
-    
+
     print("✅ Бот успешно запущен!\n")
     app.run_polling()
+
 
 if __name__ == '__main__':
     main()
